@@ -17,7 +17,10 @@ from export import build_export_workbook
 
 LOCK_TIMEOUT_MIN = 30
 app = FastAPI(title="Deed Validation")
-init_db()
+# NOTE: init_db() is intentionally NOT called here at import time. On some
+# platforms the database isn't accepting connections yet when the app image
+# boots; calling it here would crash the import and the web port would never
+# open. It runs in the background startup thread (with retries) instead.
 
 
 def _repair_scans(con):
@@ -47,11 +50,29 @@ _ingest_status = {"state": "not_started", "detail": "", "documents": 0}
 
 
 def _auto_ingest():
-    """First-boot convenience: if the DB is empty and a data folder with an
-    Excel is present, load it automatically. Runs in a background thread;
-    logs loudly on any failure so the cause is visible in platform logs."""
+    """Runs in a background thread after startup. Waits for the database to be
+    reachable, initialises the schema, then loads sample data if the DB is
+    empty. Logs loudly on failure. The web port is already open by now, so a
+    slow database never blocks the platform's health check."""
     import glob
+    import time
     import traceback
+
+    # 1) wait for DB + init schema, with retries (free-tier DBs boot slowly)
+    for attempt in range(1, 31):
+        try:
+            init_db()
+            break
+        except Exception as e:
+            _ingest_status.update(state="waiting_for_db", detail=str(e))
+            print(f"[startup] DB not ready (attempt {attempt}/30): {e}", flush=True)
+            time.sleep(3)
+    else:
+        _ingest_status.update(state="error", detail="database never became reachable")
+        print("[startup] ERROR: database never became reachable", flush=True)
+        return
+
+    # 2) load data if empty
     try:
         con = connect()
         try:
@@ -62,7 +83,7 @@ def _auto_ingest():
                 _repair_scans(con)
                 return
         finally:
-            con.close()  # release lock before the (slow) ingest opens its own conn
+            con.close()
 
         found = sorted(glob.glob("data/**/*.xlsx", recursive=True))
         print(f"[startup] xlsx files found: {found}", flush=True)
@@ -99,8 +120,9 @@ def _startup():
 
 @app.get("/api/health")
 def health():
-    with connect() as con:
-        con.execute("SELECT 1")
+    # Must NOT touch the database — this is the platform's port/liveness probe.
+    # If it depended on the DB, a slow or not-yet-ready DB would make the
+    # platform think the app never started and kill it.
     return {"ok": True}
 
 
@@ -109,8 +131,11 @@ def ingest_status():
     """Diagnostic: shows whether first-boot data loading ran and its result."""
     import glob
     import os
-    with connect() as con:
-        docs = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+    try:
+        with connect() as con:
+            docs = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+    except Exception as e:
+        docs = f"db error: {e}"
     return {**_ingest_status, "documents_now": docs,
             "xlsx_found": sorted(glob.glob("data/**/*.xlsx", recursive=True)),
             "data_dir_exists": os.path.isdir("data"),
@@ -120,9 +145,13 @@ def ingest_status():
 @app.get("/api/ready")
 def ready():
     """Reports whether first-boot data loading has finished."""
-    with connect() as con:
-        n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
-    return {"loading": n == 0, "documents": n}
+    try:
+        with connect() as con:
+            n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+        return {"loading": n == 0, "documents": n, "state": _ingest_status["state"]}
+    except Exception as e:
+        return {"loading": True, "documents": 0,
+                "state": _ingest_status["state"], "detail": str(e)}
 
 
 # ---------- auth ----------
