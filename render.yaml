@@ -1,0 +1,26 @@
+# Render blueprint — FREE tier preset (for a shareable test link).
+# Free trade-offs: app sleeps after 15 min idle (first visit takes ~1 min to
+# wake), and the free Postgres is deleted after 30 days. The app self-heals
+# scan files after restarts, so the demo keeps working.
+#
+# For an always-on paid setup (~$15/mo total): change the service plan to
+# 'starter', the database plan to 'basic-256mb', and add a persistent disk:
+#     disk:
+#       name: scans
+#       mountPath: /app/static/scans
+#       sizeGB: 10
+services:
+  - type: web
+    name: deed-validator
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: deeds-db
+          property: connectionString
+
+databases:
+  - name: deeds-db
+    plan: free

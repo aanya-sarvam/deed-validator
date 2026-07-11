@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Document Validation Portal</title>
+<style>
+  :root {
+    --ink: #1e3a5f; --ink-deep: #142942; --paper: #f4f5f7; --card: #ffffff;
+    --line: #d9dee6; --muted: #67707e; --ok: #2c6e49; --warn: #a4581f; --bad: #9c2b2b;
+    --edited: #f2ecdc; --accent-soft: #e8eef6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--paper); color: #22262c; }
+  .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  .serif { font-family: Georgia, "Times New Roman", serif; }
+  label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4px; }
+  input, textarea, select { width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 6px; font: inherit; background: #fff; }
+  input:focus, textarea:focus, select:focus { outline: 2px solid var(--ink);
+    outline-offset: -1px; border-color: var(--ink); }
+  button { font: inherit; border-radius: 6px; border: 1px solid var(--line); background: #fff;
+           padding: 8px 16px; cursor: pointer; white-space: nowrap; }
+  button:hover { background: #f0f2f5; }
+  button.primary { background: var(--ink); border-color: var(--ink); color: #fff; }
+  button.primary:hover { background: var(--ink-deep); }
+  button.danger { color: var(--bad); border-color: #e4c9c9; }
+  button.danger:hover { background: #faf1f1; }
+  button.small { padding: 4px 12px; font-size: 13px; }
+  .err { color: var(--bad); font-size: 13px; min-height: 18px; margin-top: 10px; }
+  .view { display: none; }
+
+  /* ---- login ---- */
+  #login { min-height: 100vh; display: flex; }
+  #login .side { flex: 1; background: var(--ink); color: #e8edf4; display: flex;
+    flex-direction: column; justify-content: center; padding: 60px; }
+  #login .side h2 { font: 500 26px Georgia, serif; margin: 18px 0 10px; color: #fff; }
+  #login .side p { max-width: 380px; color: #b9c6d8; font-size: 14.5px; }
+  .crest { width: 58px; height: 58px; border: 2px solid #b9c6d8; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font: 500 20px Georgia, serif; color: #fff; letter-spacing: 1px; }
+  #login .side .foot { margin-top: 40px; font-size: 12.5px; color: #8fa2ba;
+    border-top: 1px solid #35516f; padding-top: 14px; max-width: 380px; }
+  #login .formside { width: 460px; background: var(--card); display: flex;
+    align-items: center; justify-content: center; border-left: 1px solid var(--line); }
+  #login .formbox { width: 320px; }
+  #login .formbox h1 { font: 500 20px Georgia, serif; color: var(--ink); margin: 0 0 2px; }
+  #login .formbox p.sub { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+  @media (max-width: 760px) { #login .side { display: none; } #login .formside { width: 100%; border: 0; } }
+
+  /* ---- shell ---- */
+  header.bar { display: flex; align-items: center; gap: 14px; padding: 10px 18px;
+    background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  header.bar .brand { font: 500 16px Georgia, serif; color: var(--ink); white-space: nowrap;
+    display: flex; align-items: center; gap: 10px; }
+  header.bar .brand .mini { width: 26px; height: 26px; border: 1.5px solid var(--ink);
+    border-radius: 50%; font-size: 11px; display: flex; align-items: center; justify-content: center; }
+  header.bar nav { display: flex; gap: 4px; margin-left: 10px; }
+  header.bar nav button { border: 0; background: none; padding: 6px 12px; border-radius: 6px;
+    color: var(--muted); font-size: 14px; }
+  header.bar nav button.active { background: var(--accent-soft); color: var(--ink); font-weight: 500; }
+  header.bar .spacer { flex: 1; }
+  header.bar .meta { font-size: 13px; color: var(--muted); white-space: nowrap; }
+
+  /* ---- browse ---- */
+  #browse { padding: 20px 24px; display: grid; grid-template-columns: 230px 1fr; gap: 22px;
+    max-width: 1280px; margin: 0 auto; }
+  .settings h2 { font: 500 18px Georgia, serif; color: var(--ink); margin: 4px 0 6px; }
+  .settings label { margin-top: 14px; }
+  .searchrow { display: grid; grid-template-columns: 190px 1fr auto auto; gap: 8px; }
+  #results-meta { color: var(--muted); font-size: 13.5px; margin: 14px 0 8px; }
+  table.results { width: 100%; border-collapse: collapse; background: var(--card);
+    border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 13.5px; }
+  table.results th { text-align: left; background: #eef1f5; color: var(--ink);
+    font-weight: 500; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  table.results td { padding: 9px 12px; border-bottom: 1px solid #e8ebf0; vertical-align: top; }
+  table.results tr:last-child td { border-bottom: 0; }
+  table.results tr:hover td { background: #f7f9fb; }
+  .party { white-space: pre-line; max-width: 220px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+    padding: 2px 10px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+  .chip.pending    { color: var(--muted); border-color: var(--line); background: #f4f5f7; }
+  .chip.in_review  { color: var(--warn); border-color: #e3cdb6; background: #faf4ec; }
+  .chip.validated  { color: var(--ok); border-color: #bfd8c9; background: #eef6f1; }
+  .chip.flagged    { color: var(--bad); border-color: #e4c9c9; background: #faf1f1; }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .reviewer { font-size: 11.5px; color: var(--warn); margin-top: 3px; display: flex;
+    align-items: center; gap: 5px; }
+  .reviewer svg { width: 12px; height: 12px; }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
+  .pager .info { color: var(--muted); font-size: 13px; }
+
+  /* ---- validate ---- */
+  #validate { height: calc(100vh - 49px); display: flex; flex-direction: column; }
+  .vhead { display: flex; align-items: center; gap: 12px; padding: 8px 18px;
+    background: var(--card); border-bottom: 1px solid var(--line); font-size: 14px; }
+  .vmain { flex: 1; display: grid; grid-template-columns: minmax(380px, 46%) 1fr; min-height: 0; }
+  #formpane { overflow-y: auto; padding: 16px 18px 90px; border-right: 1px solid var(--line); }
+  .section { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+             padding: 12px 16px 16px; margin-bottom: 12px; }
+  .section h3 { margin: 0 0 8px; font: 500 13px/1 Georgia, serif; color: var(--ink);
+                letter-spacing: .4px; text-transform: uppercase; }
+  .frow { margin: 8px 0 0; }
+  .frow input.changed, .frow textarea.changed { background: var(--edited); }
+  .ocr-orig { font-size: 11.5px; color: var(--warn); margin-top: 2px; display: none; }
+  .ocr-orig.show { display: block; }
+  textarea { resize: vertical; min-height: 54px; }
+  #pdfpane { display: flex; flex-direction: column; min-width: 0; }
+  #pdfpane .bar { padding: 6px 14px; font-size: 12.5px; color: var(--muted);
+                  border-bottom: 1px solid var(--line); background: var(--card); }
+  #pdfframe { flex: 1; border: 0; width: 100%; background: #3a3d42; }
+  #nopdf { flex: 1; display: none; align-items: center; justify-content: center; color: var(--muted); }
+  .vfoot { display: flex; align-items: center; gap: 10px; padding: 10px 18px;
+    background: var(--card); border-top: 1px solid var(--line); }
+  #savestate { font-size: 12px; color: var(--muted); flex: 1; }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px;
+        border-radius: 4px; padding: 0 5px; background: #f0f2f5; }
+  .robanner { background: #faf4ec; color: var(--warn); border: 1px solid #e3cdb6;
+    border-radius: 6px; padding: 8px 12px; font-size: 13px; margin-bottom: 12px; }
+
+  /* ---- admin ---- */
+  .page { padding: 26px 24px; max-width: 900px; margin: 0 auto; }
+  .page h1 { font: 500 22px Georgia, serif; color: var(--ink); }
+  .page h2 { font: 500 17px Georgia, serif; color: var(--ink); margin-top: 26px; }
+  table.stats { border-collapse: collapse; width: 100%; background: var(--card);
+                border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  table.stats th, table.stats td { text-align: left; padding: 8px 14px;
+                border-bottom: 1px solid var(--line); font-size: 14px; }
+  table.stats th { background: #eef1f5; font-weight: 500; color: var(--ink); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 10px; margin: 14px 0 6px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px; }
+  .card .num { font: 500 22px Georgia, serif; color: var(--ink); }
+  .card .lbl { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .pbar { height: 8px; background: #e6eaf0; border-radius: 6px; overflow: hidden;
+    margin: 8px 0 2px; }
+  .pbar > div { height: 100%; background: var(--ok); }
+  .newuser { display: grid; grid-template-columns: 1fr 1fr 1fr 130px auto; gap: 10px;
+    align-items: end; background: var(--card); border: 1px solid var(--line);
+    border-radius: 8px; padding: 4px 16px 16px; }
+</style>
+</head>
+<body>
+
+<!-- ================= LOGIN ================= -->
+<div id="login" class="view">
+  <div class="side">
+    <div class="crest">DV</div>
+    <h2>Document Validation Portal</h2>
+    <p>Review digitised records against their original scanned documents.
+       Corrections are saved instantly, every change is attributed and
+       audit-logged, and validated data can be exported at any time.</p>
+  </div>
+  <div class="formside">
+    <div class="formbox">
+      <h1>Sign in</h1>
+      <p class="sub">Use the account issued by your administrator</p>
+      <label for="u">Username</label>
+      <input id="u" autocomplete="username">
+      <label for="p">Password</label>
+      <input id="p" type="password" autocomplete="current-password">
+      <div class="err" id="loginerr"></div>
+      <button class="primary" style="width:100%; margin-top:6px" onclick="doLogin()">Sign in</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= SHELL ================= -->
+<div id="shell" class="view">
+  <header class="bar">
+    <span class="brand"><span class="mini">DV</span>Document Validation</span>
+    <nav>
+      <button id="nav-browse" class="active" onclick="showView('browse')">Search records</button>
+      <button id="nav-progress" onclick="showView('progress')" style="display:none">Dashboard</button>
+      <button id="nav-assign" onclick="showView('assign')" style="display:none">Assign work</button>
+      <button id="nav-accounts" onclick="showView('accounts')" style="display:none">Accounts</button>
+    </nav>
+    <span class="spacer"></span>
+    <span class="meta" id="usermeta"></span>
+    <button class="small" onclick="togglePw()">Change password</button>
+    <button class="small" onclick="logout()">Sign out</button>
+  </header>
+
+  <div id="pwpanel" style="display:none; position:absolute; right:18px; top:52px; z-index:20;
+       background:var(--card); border:1px solid var(--line); border-radius:8px;
+       padding:4px 16px 16px; width:280px; box-shadow:0 4px 14px rgba(20,41,66,.12)">
+    <label>Current password</label><input id="pw_old" type="password">
+    <label>New password</label><input id="pw_new" type="password">
+    <label>Repeat new password</label><input id="pw_new2" type="password">
+    <div class="err" id="pw_err"></div>
+    <div style="display:flex; gap:8px; margin-top:6px">
+      <button class="primary small" onclick="changePw()">Update</button>
+      <button class="small" onclick="togglePw()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- ---- browse / search ---- -->
+  <div id="browse" class="view">
+    <div class="settings">
+      <h2>Settings</h2>
+      <label>Sort by</label>
+      <select id="sort_by" onchange="runSearch(1)">
+        <option value="year">Year</option>
+        <option value="deed_number">Deed number</option>
+        <option value="book_no">Book no</option>
+        <option value="status">Status</option>
+      </select>
+      <label>Sort order</label>
+      <select id="sort_order" onchange="runSearch(1)">
+        <option value="asc">Ascending</option>
+        <option value="desc">Descending</option>
+      </select>
+      <label>Results per page</label>
+      <select id="per_page" onchange="runSearch(1)">
+        <option>10</option><option>25</option><option>50</option>
+      </select>
+      <label>Status</label>
+      <select id="f_status" onchange="runSearch(1)">
+        <option value="">All</option>
+        <option value="pending">Pending</option>
+        <option value="in_review">In review</option>
+        <option value="validated">Validated</option>
+        <option value="flagged">Flagged</option>
+      </select>
+      <div style="margin-top:22px">
+        <button class="primary" style="width:100%" onclick="startQueue()">Validate next in queue</button>
+      </div>
+    </div>
+    <div>
+      <div class="searchrow">
+        <select id="f_field">
+          <option value="deed_number">Deed number</option>
+          <option value="party_name">Party name</option>
+          <option value="year">Year</option>
+          <option value="book_no">Book no</option>
+        </select>
+        <input id="f_q" placeholder="Search term — leave empty to list all"
+               onkeydown="if(event.key==='Enter')runSearch(1)">
+        <button class="primary" onclick="runSearch(1)">Search</button>
+        <button onclick="$('f_q').value='';runSearch(1)">Clear</button>
+      </div>
+      <div id="results-meta"></div>
+      <table class="results">
+        <thead><tr>
+          <th>Deed no</th><th>Type</th><th>Year</th><th>Book</th><th>SR office</th>
+          <th>First party</th><th>Second party</th><th>Status</th><th></th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="pager">
+        <button class="small" id="prevbtn" onclick="runSearch(PAGE-1)">Previous</button>
+        <span class="info" id="pageinfo"></span>
+        <button class="small" id="nextbtn" onclick="runSearch(PAGE+1)">Next</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---- validate ---- -->
+  <div id="validate" class="view">
+    <div class="vhead">
+      <button class="small" onclick="backToBrowse()">&#8592; Back to search</button>
+      <span class="mono" id="deedtitle"></span>
+      <span class="chip in_review" id="statuspill"></span>
+      <span class="spacer" style="flex:1"></span>
+      <span class="meta" id="queuemeta"></span>
+    </div>
+    <div class="vmain">
+      <div id="formpane"></div>
+      <div id="pdfpane">
+        <div class="bar" id="pdfbar"></div>
+        <iframe id="pdfframe" title="Scanned deed"></iframe>
+        <div id="nopdf">No scan attached to this deed — validate from metadata or flag it.</div>
+      </div>
+    </div>
+    <div class="vfoot" id="vfoot">
+      <span id="savestate">All changes saved</span>
+      <button onclick="doSkip()">Skip</button>
+      <button class="danger" onclick="doFlag()">Flag</button>
+      <button class="primary" onclick="doApprove()">Approve &amp; next &nbsp;<kbd>Ctrl</kbd>+<kbd>Enter</kbd></button>
+    </div>
+  </div>
+
+  <!-- ---- admin: progress ---- -->
+  <div id="progress" class="view page" style="max-width:1100px"></div>
+
+  <!-- ---- admin: assign work ---- -->
+  <div id="assign" class="view page">
+    <h1>Assign work</h1>
+    <p style="color:var(--muted);font-size:13.5px;margin-top:-8px">
+      Assigned deeds appear first in that expert's queue and cannot be picked up by
+      other experts. Unassigned deeds remain in the shared pool.</p>
+    <div class="newuser" style="grid-template-columns:1fr 120px 120px 120px auto">
+      <div><label>Expert</label><select id="as_expert"></select></div>
+      <div><label>How many</label><input id="as_count" type="number" value="10" min="1"></div>
+      <div><label>Book (optional)</label><input id="as_book" type="number" placeholder="any"></div>
+      <div><label>Year (optional)</label><input id="as_year" type="number" placeholder="any"></div>
+      <button class="primary" onclick="doAssign()">Assign</button>
+    </div>
+    <div class="err" id="as_err"></div>
+    <div id="as_ok" style="color:var(--ok);font-size:13px;min-height:18px"></div>
+    <h2>Current workload</h2>
+    <table class="stats"><thead><tr><th>Expert</th><th>Assigned (open)</th>
+      <th>Validated</th><th>Today</th><th></th></tr></thead>
+      <tbody id="as_rows"></tbody></table>
+    <p style="color:var(--muted);font-size:13px" id="as_pool"></p>
+  </div>
+
+  <!-- ---- admin: accounts ---- -->
+  <div id="accounts" class="view page">
+    <h1>Accounts</h1>
+    <div class="newuser">
+      <div><label>Username</label><input id="nu_user"></div>
+      <div><label>Full name</label><input id="nu_name"></div>
+      <div><label>Password</label><input id="nu_pass" type="password"></div>
+      <div><label>Role</label>
+        <select id="nu_role"><option value="expert">Expert</option><option value="admin">Admin</option></select></div>
+      <button class="primary" onclick="createUser()">Create</button>
+    </div>
+    <div class="err" id="nu_err"></div>
+    <h2>Existing users</h2>
+    <table class="stats"><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Validated</th></tr></thead>
+      <tbody id="userrows"></tbody></table>
+  </div>
+</div>
+
+<script>
+let TOKEN = localStorage.getItem('deed_token') || '';
+let ROLE  = localStorage.getItem('deed_role')  || '';
+let NAME  = localStorage.getItem('deed_name')  || '';
+let UID   = +(localStorage.getItem('deed_uid') || 0);
+let DOC = null, dirty = 0, PAGE = 1, QUEUE_MODE = false;
+
+const $ = id => document.getElementById(id);
+const PERSON_ICON = '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3 3-4.5 6-4.5s6 1.5 6 4.5z"/></svg>';
+
+const api = (path, opts = {}) =>
+  fetch(`/api${path}${path.includes('?') ? '&' : '?'}token=${TOKEN}`, {
+    headers: { 'Content-Type': 'application/json' }, ...opts
+  }).then(async r => {
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    return r.json();
+  });
+
+function showView(name) {
+  for (const v of ['browse', 'validate', 'progress', 'assign', 'accounts'])
+    $(v).style.display = 'none';
+  for (const n of ['browse', 'progress', 'assign', 'accounts']) {
+    const b = $('nav-' + n); if (b) b.classList.toggle('active', n === name);
+  }
+  $(name).style.display = name === 'browse' ? 'grid' : (name === 'validate' ? 'flex' : 'block');
+  if (name === 'progress') loadProgress();
+  if (name === 'assign') loadAssign();
+  if (name === 'accounts') loadUsers();
+}
+
+/* ---------- auth ---------- */
+async function doLogin() {
+  $('loginerr').textContent = '';
+  try {
+    const r = await fetch('/api/login', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: $('u').value.trim(), password: $('p').value }) });
+    if (!r.ok) throw new Error((await r.json()).detail);
+    const d = await r.json();
+    TOKEN = d.token; ROLE = d.role; NAME = d.full_name; UID = d.user_id;
+    localStorage.setItem('deed_token', TOKEN); localStorage.setItem('deed_role', ROLE);
+    localStorage.setItem('deed_name', NAME);   localStorage.setItem('deed_uid', UID);
+    enterApp();
+  } catch (e) { $('loginerr').textContent = e.message; }
+}
+$('p').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+function logout() { localStorage.clear(); location.reload(); }
+
+function togglePw() {
+  const p = $('pwpanel');
+  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+  $('pw_err').textContent = '';
+  $('pw_old').value = $('pw_new').value = $('pw_new2').value = '';
+}
+async function changePw() {
+  $('pw_err').textContent = '';
+  if ($('pw_new').value !== $('pw_new2').value) {
+    $('pw_err').textContent = 'New passwords do not match'; return;
+  }
+  try {
+    await api('/me/password', { method: 'POST', body: JSON.stringify({
+      old_password: $('pw_old').value, new_password: $('pw_new').value }) });
+    togglePw();
+    alert('Password updated. Other signed-in sessions were signed out.');
+  } catch (e) { $('pw_err').textContent = e.message; }
+}
+
+function enterApp() {
+  $('login').style.display = 'none';
+  $('shell').style.display = 'block';
+  $('usermeta').textContent = `${NAME} · ${ROLE}`;
+  if (ROLE === 'admin') {
+    $('nav-progress').style.display = '';
+    $('nav-assign').style.display = '';
+    $('nav-accounts').style.display = '';
+  }
+  showView('browse');
+  runSearch(1);
+}
+
+/* ---------- browse ---------- */
+async function checkReady() {
+  try {
+    const r = await fetch('/api/ready');
+    const d = await r.json();
+    if (d.loading) {
+      $('results-meta').innerHTML =
+        'Loading documents for the first time — this takes a minute on first launch. ' +
+        'Refreshing automatically…';
+      setTimeout(() => runSearch(PAGE), 4000);
+      return false;
+    }
+  } catch (e) {}
+  return true;
+}
+
+async function runSearch(page) {
+  PAGE = Math.max(1, page);
+  if (!(await checkReady())) return;
+  const p = new URLSearchParams({
+    q: $('f_q').value, field: $('f_field').value, status: $('f_status').value,
+    sort_by: $('sort_by').value, sort_order: $('sort_order').value,
+    page: PAGE, per_page: $('per_page').value });
+  const d = await api('/search?' + p);
+  const from = d.total ? (d.page - 1) * d.per_page + 1 : 0;
+  const to = Math.min(d.page * d.per_page, d.total);
+  $('results-meta').textContent = `Now showing ${from} – ${to} of ${d.total}`;
+  $('pageinfo').textContent = `Page ${d.page}`;
+  $('prevbtn').disabled = d.page <= 1;
+  $('nextbtn').disabled = to >= d.total;
+
+  const tb = $('rows'); tb.innerHTML = '';
+  for (const r of d.results) {
+    const tr = document.createElement('tr');
+    const reviewer = (r.status === 'in_review' && r.locked_name)
+      ? `<div class="reviewer">${PERSON_ICON}${r.locked_name}</div>` : '';
+    const assigned = (r.assigned_name && (r.status === 'pending' || r.status === 'in_review'))
+      ? `<div class="reviewer" style="color:var(--muted)">Assigned: ${r.assigned_name}</div>` : '';
+    const label = { pending: 'Pending', in_review: 'In review',
+                    validated: 'Validated', flagged: 'Flagged' }[r.status];
+    const action = (r.status === 'validated' || r.status === 'flagged') ? 'View' : 'Validate';
+    tr.innerHTML = `
+      <td class="mono">${r.deed_number}</td><td>${r.deed_type}</td><td>${r.year}</td>
+      <td>${r.book_no}</td><td>${r.sr_office}</td>
+      <td class="party">${r.first_party || '—'}</td><td class="party">${r.second_party || '—'}</td>
+      <td><span class="chip ${r.status}"><span class="dot"></span>${label}</span>${reviewer}${assigned}</td>
+      <td><button class="small primary" onclick="openDoc(${r.id})">${action}</button></td>`;
+    tb.appendChild(tr);
+  }
+  if (!d.results.length)
+    tb.innerHTML = '<tr><td colspan="9" style="color:var(--muted)">No records match.</td></tr>';
+}
+
+/* ---------- validate ---------- */
+async function openDoc(id) {
+  QUEUE_MODE = false;
+  try { renderDoc(await api(`/documents/${id}/claim`, { method: 'POST' })); }
+  catch (e) { alert(e.message); runSearch(PAGE); }
+}
+async function startQueue() {
+  QUEUE_MODE = true;
+  const d = await api('/queue/next');
+  if (!d.document) { alert('Queue complete — no pending deeds remain.'); runSearch(PAGE); return; }
+  d.editable = true;
+  renderDoc(d);
+}
+
+function renderDoc(d) {
+  DOC = d; dirty = 0;
+  const doc = d.document, editable = !!d.editable;
+  showView('validate');
+  $('deedtitle').textContent = `Deed ${doc.deed_number} · ${doc.deed_type} · ${doc.sr_office}`;
+  const pill = $('statuspill');
+  pill.className = 'chip ' + doc.status;
+  pill.innerHTML = `<span class="dot"></span>${{pending:'Pending',in_review:'In review',
+    validated:'Validated',flagged:'Flagged'}[doc.status]}`;
+  $('queuemeta').textContent = QUEUE_MODE ? `${d.remaining} in queue` : '';
+  $('vfoot').style.display = editable ? 'flex' : 'none';
+  $('pdfbar').textContent = doc.pdf_file ? `${doc.pdf_file} — original scan` : 'No scan file';
+  if (doc.pdf_file) {
+    $('pdfframe').style.display = ''; $('nopdf').style.display = 'none';
+    $('pdfframe').src = `/api/documents/${doc.id}/pdf?token=${TOKEN}`;
+  } else { $('pdfframe').style.display = 'none'; $('nopdf').style.display = 'flex'; }
+
+  const pane = $('formpane'); pane.innerHTML = '';
+  if (!editable) {
+    const b = document.createElement('div');
+    b.className = 'robanner';
+    b.textContent = doc.status === 'flagged'
+      ? `Read-only — flagged: ${doc.flag_reason || 'no reason given'}`
+      : 'Read-only — this deed is already validated.';
+    pane.appendChild(b);
+  }
+  let sec = null, secEl = null;
+  for (const f of d.fields) {
+    if (f.section !== sec) {
+      sec = f.section;
+      secEl = document.createElement('div');
+      secEl.className = 'section';
+      secEl.innerHTML = `<h3>${f.section}</h3>`;
+      pane.appendChild(secEl);
+    }
+    const row = document.createElement('div');
+    row.className = 'frow';
+    const tag = f.multiline ? 'textarea' : 'input';
+    row.innerHTML = `<label for="f${f.id}">${f.label}</label>
+      <${tag} id="f${f.id}" data-fid="${f.id}" ${editable ? '' : 'disabled'}></${tag}>
+      <div class="ocr-orig" id="o${f.id}"></div>`;
+    secEl.appendChild(row);
+    const el = row.querySelector('[data-fid]');
+    el.value = f.current_value;
+    markChanged(el, f);
+    if (editable) {
+      el.addEventListener('change', () => saveField(el, f));
+      el.addEventListener('input', () => { $('savestate').textContent = 'Editing…'; });
+    }
+  }
+  pane.scrollTop = 0;
+  if (editable) { const first = pane.querySelector('[data-fid]'); if (first) first.focus(); }
+}
+
+function markChanged(el, f) {
+  const changed = el.value !== f.ocr_value;
+  el.classList.toggle('changed', changed);
+  const o = $('o' + f.id);
+  o.textContent = changed ? `OCR read: ${f.ocr_value || '(empty)'}` : '';
+  o.classList.toggle('show', changed);
+}
+
+async function saveField(el, f) {
+  dirty++; $('savestate').textContent = 'Saving…';
+  try {
+    await api(`/documents/${DOC.document.id}/fields/${f.id}`,
+      { method: 'PATCH', body: JSON.stringify({ value: el.value }) });
+    f.current_value = el.value; markChanged(el, f);
+    $('savestate').textContent = 'All changes saved';
+  } catch (e) { $('savestate').textContent = 'Save failed: ' + e.message; }
+  finally { dirty--; }
+}
+async function flushPending() {
+  document.activeElement && document.activeElement.blur();
+  while (dirty > 0) await new Promise(r => setTimeout(r, 60));
+}
+async function afterAction() {
+  if (QUEUE_MODE) startQueue();
+  else { showView('browse'); runSearch(PAGE); }
+}
+async function doApprove() {
+  await flushPending();
+  await api(`/documents/${DOC.document.id}/approve`, { method: 'POST' });
+  afterAction();
+}
+async function doSkip() {
+  await flushPending();
+  await api(`/documents/${DOC.document.id}/skip`, { method: 'POST' });
+  afterAction();
+}
+async function doFlag() {
+  const reason = prompt('Why is this deed being flagged? (e.g. illegible scan, wrong file)');
+  if (reason === null) return;
+  await flushPending();
+  await api(`/documents/${DOC.document.id}/flag`,
+    { method: 'POST', body: JSON.stringify({ reason }) });
+  afterAction();
+}
+function backToBrowse() {
+  if (DOC && DOC.editable) doSkip(); else { showView('browse'); runSearch(PAGE); }
+}
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey && e.key === 'Enter' && DOC && $('validate').style.display === 'flex' && DOC.editable) {
+    e.preventDefault(); doApprove();
+  }
+});
+
+/* ---------- admin ---------- */
+async function loadProgress() {
+  const s = await api('/admin/dashboard');
+  const v = k => s.by_status[k] || 0;
+  const pct = s.total ? Math.round(v('validated') / s.total * 100) : 0;
+  const cards = `
+    <div class="cards">
+      <div class="card"><div class="num">${s.total}</div><div class="lbl">Total documents</div></div>
+      <div class="card"><div class="num">${v('validated')}</div><div class="lbl">Validated</div></div>
+      <div class="card"><div class="num">${v('pending')}</div><div class="lbl">Pending</div></div>
+      <div class="card"><div class="num">${v('in_review')}</div><div class="lbl">In review</div></div>
+      <div class="card"><div class="num">${v('flagged')}</div><div class="lbl">Flagged</div></div>
+      <div class="card"><div class="num">${s.total_edits}</div><div class="lbl">Corrections made</div></div>
+    </div>
+    <div class="pbar"><div style="width:${pct}%"></div></div>
+    <p style="color:var(--muted);font-size:12.5px">${pct}% of the corpus validated ·
+      ${s.unassigned_pending} pending documents not yet assigned to anyone</p>`;
+
+  const expertRows = s.experts.map(e => `<tr>
+      <td>${e.full_name}</td><td>${e.assigned_remaining} / ${e.assigned_total}</td>
+      <td>${e.validated}</td><td>${e.validated_today}</td><td>${e.validated_7d}</td>
+      <td>${e.corrections}</td><td>${e.flags}</td>
+      <td>${e.last_active || '—'}</td></tr>`).join('')
+    || '<tr><td colspan="8">No experts yet</td></tr>';
+
+  const bookRows = s.books.map(b => {
+    const p = b.total ? Math.round(b.validated / b.total * 100) : 0;
+    return `<tr><td>Book ${b.book_no}</td><td>${b.validated} / ${b.total}</td>
+      <td>${b.flagged}</td><td style="min-width:160px">
+      <div class="pbar" style="margin:0"><div style="width:${p}%"></div></div></td>
+      <td>${p}%</td></tr>`;
+  }).join('');
+
+  const dailyRows = s.daily.map(d => `<tr><td>${d.day}</td><td>${d.c}</td></tr>`).join('')
+    || '<tr><td colspan="2">No validations in the last 14 days</td></tr>';
+
+  const flaggedRows = s.flagged.map(f =>
+    `<tr><td class="mono">${f.deed_number}</td><td>${f.flag_reason || '—'}</td>
+     <td>${f.flagged_by || '—'}</td></tr>`).join('')
+    || '<tr><td colspan="3">None</td></tr>';
+
+  $('progress').innerHTML = `
+    <h1>Dashboard</h1>
+    ${cards}
+    <h2>Experts</h2>
+    <table class="stats"><thead><tr><th>Expert</th><th>Assigned (open / total)</th>
+      <th>Validated</th><th>Today</th><th>Last 7 days</th><th>Corrections</th>
+      <th>Flags</th><th>Last active</th></tr></thead><tbody>${expertRows}</tbody></table>
+    <h2>Progress by book</h2>
+    <table class="stats"><thead><tr><th>Book</th><th>Validated / total</th>
+      <th>Flagged</th><th></th><th></th></tr></thead><tbody>${bookRows}</tbody></table>
+    <h2>Daily activity (14 days)</h2>
+    <table class="stats"><thead><tr><th>Day</th><th>Validated</th></tr></thead>
+      <tbody>${dailyRows}</tbody></table>
+    <h2>Flagged documents</h2>
+    <table class="stats"><thead><tr><th>Document</th><th>Reason</th><th>Flagged by</th></tr></thead>
+      <tbody>${flaggedRows}</tbody></table>
+    <p style="margin-top:16px"><button class="primary"
+      onclick="location.href='/api/export?token='+TOKEN">
+      Download corrected dataset (Excel)</button></p>`;
+}
+
+async function loadAssign() {
+  const [users, s] = await Promise.all([api('/users'), api('/admin/dashboard')]);
+  $('as_expert').innerHTML = users.filter(u => u.role === 'expert')
+    .map(u => `<option value="${u.id}">${u.full_name} (${u.username})</option>`).join('');
+  $('as_rows').innerHTML = s.experts.map(e => `<tr>
+      <td>${e.full_name}</td><td>${e.assigned_remaining}</td>
+      <td>${e.validated}</td><td>${e.validated_today}</td>
+      <td><button class="small" onclick="doUnassign(${e.id})">Return open to pool</button></td>
+    </tr>`).join('');
+  $('as_pool').textContent =
+    `${s.unassigned_pending} pending documents currently unassigned (shared pool).`;
+}
+async function doAssign() {
+  $('as_err').textContent = ''; $('as_ok').textContent = '';
+  try {
+    const body = { expert_id: +$('as_expert').value, count: +$('as_count').value };
+    if ($('as_book').value) body.book_no = +$('as_book').value;
+    if ($('as_year').value) body.year = +$('as_year').value;
+    const r = await api('/admin/assign', { method: 'POST', body: JSON.stringify(body) });
+    $('as_ok').textContent = `Assigned ${r.assigned} document(s).` +
+      (r.assigned < +$('as_count').value ? ' (fewer matching unassigned documents were available)' : '');
+    loadAssign();
+  } catch (e) { $('as_err').textContent = e.message; }
+}
+async function doUnassign(id) {
+  const r = await api('/admin/unassign', { method: 'POST',
+    body: JSON.stringify({ expert_id: id }) });
+  $('as_ok').textContent = `Returned ${r.unassigned} document(s) to the pool.`;
+  loadAssign();
+}
+
+async function loadUsers() {
+  const users = await api('/users');
+  $('userrows').innerHTML = users.map(u =>
+    `<tr><td class="mono">${u.username}</td><td>${u.full_name}</td>
+     <td>${u.role}</td><td>${u.validated}</td></tr>`).join('');
+}
+async function createUser() {
+  $('nu_err').textContent = '';
+  try {
+    await api('/users', { method: 'POST', body: JSON.stringify({
+      username: $('nu_user').value, full_name: $('nu_name').value,
+      password: $('nu_pass').value, role: $('nu_role').value }) });
+    $('nu_user').value = $('nu_name').value = $('nu_pass').value = '';
+    loadUsers();
+  } catch (e) { $('nu_err').textContent = e.message; }
+}
+
+/* ---------- boot ---------- */
+if (TOKEN) enterApp(); else $('login').style.display = 'flex';
+</script>
+</body>
+</html>
