@@ -43,26 +43,45 @@ def _repair_scans(con):
     print(f"[startup] repaired {repaired}/{len(missing)} missing scan files")
 
 
+_ingest_status = {"state": "not_started", "detail": "", "documents": 0}
+
+
 def _auto_ingest():
     """First-boot convenience: if the DB is empty and a data folder with an
-    Excel is present, load it automatically. Advisory lock held across the
-    whole ingest so multiple uvicorn workers can't race."""
+    Excel is present, load it automatically. Runs in a background thread;
+    logs loudly on any failure so the cause is visible in platform logs."""
     import glob
-    con = connect()
+    import traceback
     try:
-        con.execute("SELECT pg_advisory_lock(424242)")
-        n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
-        if n:
-            _repair_scans(con)
-            return
+        con = connect()
+        try:
+            con.execute("SELECT pg_advisory_lock(424242)")
+            n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+            if n:
+                _ingest_status.update(state="done", documents=n, detail="already loaded")
+                _repair_scans(con)
+                return
+        finally:
+            con.close()  # release lock before the (slow) ingest opens its own conn
+
         found = sorted(glob.glob("data/**/*.xlsx", recursive=True))
+        print(f"[startup] xlsx files found: {found}", flush=True)
         if not found:
+            _ingest_status.update(state="error", detail="no .xlsx found under data/")
+            print("[startup] ERROR: no Excel file found under data/", flush=True)
             return
         from ingest import ingest as run_ingest
-        print(f"[startup] empty database — auto-ingesting {found[0]}")
+        _ingest_status.update(state="running", detail=found[0])
+        print(f"[startup] auto-ingesting {found[0]}", flush=True)
         run_ingest(found[0], str(Path(found[0]).parent))
-    finally:
-        con.close()  # releases the advisory lock
+        with connect() as con:
+            n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+        _ingest_status.update(state="done", documents=n, detail=found[0])
+        print(f"[startup] ingest complete — {n} documents", flush=True)
+    except Exception as e:
+        _ingest_status.update(state="error", detail=str(e))
+        print("[startup] INGEST FAILED:", flush=True)
+        traceback.print_exc()
 
 
 _auto_ingest_started = False
@@ -70,10 +89,6 @@ _auto_ingest_started = False
 
 @app.on_event("startup")
 def _startup():
-    """Kick off data loading in the BACKGROUND so uvicorn binds its port
-    immediately. Render (and any platform) health-checks the port during
-    boot; a long synchronous ingest would make it think the app never
-    started. Only the first worker to grab the advisory lock does the work."""
     global _auto_ingest_started
     if _auto_ingest_started:
         return
@@ -87,6 +102,19 @@ def health():
     with connect() as con:
         con.execute("SELECT 1")
     return {"ok": True}
+
+
+@app.get("/api/ingest-status")
+def ingest_status():
+    """Diagnostic: shows whether first-boot data loading ran and its result."""
+    import glob
+    import os
+    with connect() as con:
+        docs = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+    return {**_ingest_status, "documents_now": docs,
+            "xlsx_found": sorted(glob.glob("data/**/*.xlsx", recursive=True)),
+            "data_dir_exists": os.path.isdir("data"),
+            "cwd": os.getcwd()}
 
 
 @app.get("/api/ready")
@@ -118,6 +146,14 @@ def require_admin(user=Depends(current_user)):
     if user["role"] != "admin":
         raise HTTPException(403, "Admin access required")
     return user
+
+
+@app.post("/api/admin/reingest")
+def admin_reingest(user=Depends(require_admin)):
+    """Manually (re)run ingestion. Safe: existing deeds are skipped."""
+    import threading
+    threading.Thread(target=_auto_ingest, daemon=True).start()
+    return {"ok": True, "message": "Ingestion started — check /api/ingest-status"}
 
 
 @app.post("/api/login")
