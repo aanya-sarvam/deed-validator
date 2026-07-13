@@ -185,6 +185,32 @@ def admin_reingest(user=Depends(require_admin)):
     return {"ok": True, "message": "Ingestion started — check /api/ingest-status"}
 
 
+class SignupIn(BaseModel):
+    username: str
+    password: str
+    full_name: str = ""
+
+
+@app.post("/api/signup")
+def signup(body: SignupIn):
+    """Open self-registration. Creates an expert account, no approval needed."""
+    uname = body.username.strip()
+    if len(uname) < 3:
+        raise HTTPException(400, "Username must be at least 3 characters")
+    if len(body.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    with connect() as con:
+        try:
+            con.execute(
+                "INSERT INTO users (username, password_hash, full_name, role) "
+                "VALUES (%s,%s,%s,'expert')",
+                (uname, hash_pw(body.password), body.full_name.strip() or uname))
+            con.commit()
+        except Exception:
+            raise HTTPException(409, "That username is already taken")
+    return {"ok": True}
+
+
 @app.post("/api/login")
 def login(body: LoginIn):
     with connect() as con:
@@ -345,9 +371,13 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
             where.append("d.book_no = %s"); params.append(int(q))
     if status:
         where.append("d.status = %s"); params.append(status)
+    # Experts only ever see deeds assigned to them; admins see everything.
+    if user["role"] != "admin":
+        where.append("d.assigned_to = %s"); params.append(user["id"])
     wsql = ("WHERE " + " AND ".join(where)) if where else ""
     order_col = {"year": "d.year", "deed_number": "d.deed_number",
-                 "status": "d.status", "book_no": "d.book_no"}.get(sort_by, "d.year")
+                 "status": "d.status", "book_no": "d.book_no",
+                 "last_edited": "d.last_edited_at"}.get(sort_by, "d.id")
     order = "DESC" if sort_order == "desc" else "ASC"
     per_page = max(1, min(per_page, 100))
     offset = (max(page, 1) - 1) * per_page
@@ -358,10 +388,12 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
         rows = con.execute(
             f"SELECT d.id, d.deed_number, d.deed_type, d.year, d.book_no, d.sr_office, "
             f"d.status, (d.pdf_file IS NOT NULL) has_pdf, u.full_name locked_name, "
-            f"a.full_name assigned_name, "
+            f"a.full_name assigned_name, a.id assigned_id, "
+            f"le.full_name last_edited_name, to_char(d.last_edited_at, 'DD Mon HH24:MI') last_edited_at, "
             f"{PARTY_NAME_SQL} first_party, {PARTY_NAME_SQL} second_party "
             f"FROM documents d LEFT JOIN users u ON u.id = d.locked_by "
             f"LEFT JOIN users a ON a.id = d.assigned_to "
+            f"LEFT JOIN users le ON le.id = d.last_edited_by "
             f"{wsql} ORDER BY {order_col} {order}, d.id LIMIT %s OFFSET %s",
             ["First party%", "Second party%"] + params + [per_page, offset]).fetchall()
     return {"total": total, "page": page, "per_page": per_page,
@@ -399,9 +431,31 @@ def patch_field(doc_id: int, field_id: int, body: FieldPatch, user=Depends(curre
                 "INSERT INTO edit_log (document_id, field_id, old_value, new_value, action, user_id) "
                 "VALUES (%s,%s,%s,%s,'edit',%s)",
                 (doc_id, field_id, f["current_value"], body.value, user["id"]))
-            con.execute("UPDATE documents SET locked_at = now() WHERE id = %s", (doc_id,))
+            con.execute(
+                "UPDATE documents SET locked_at = now(), "
+                "last_edited_by = %s, last_edited_at = now() WHERE id = %s",
+                (user["id"], doc_id))
         con.commit()
     return {"ok": True}
+
+
+@app.get("/api/documents/{doc_id}/history")
+def field_history(doc_id: int, user=Depends(current_user)):
+    """Every field change on this deed: field, old, new, who, when.
+    Powers the admin 'who changed what' view."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT e.ts, e.action, e.old_value, e.new_value, "
+            "u.full_name AS by_name, f.section, f.label "
+            "FROM edit_log e JOIN users u ON u.id = e.user_id "
+            "LEFT JOIN fields f ON f.id = e.field_id "
+            "WHERE e.document_id = %s ORDER BY e.ts DESC", (doc_id,)).fetchall()
+    out = []
+    for r in rows:
+        r = dict(r)
+        r["ts"] = str(r["ts"])[:19]
+        out.append(r)
+    return out
 
 
 @app.post("/api/documents/{doc_id}/approve")
@@ -445,6 +499,24 @@ def skip(doc_id: int, user=Depends(current_user)):
 
 
 # ---------- admin ----------
+
+class AssignOneIn(BaseModel):
+    expert_id: int | None = None  # None = unassign
+
+
+@app.post("/api/documents/{doc_id}/assign")
+def assign_one(doc_id: int, body: AssignOneIn, user=Depends(require_admin)):
+    """Assign (or unassign) a single specific deed to an expert."""
+    with connect() as con:
+        if body.expert_id is not None and not con.execute(
+                "SELECT 1 FROM users WHERE id=%s AND role='expert'",
+                (body.expert_id,)).fetchone():
+            raise HTTPException(404, "Expert not found")
+        con.execute("UPDATE documents SET assigned_to=%s WHERE id=%s",
+                    (body.expert_id, doc_id))
+        con.commit()
+    return {"ok": True}
+
 
 class AssignIn(BaseModel):
     expert_id: int

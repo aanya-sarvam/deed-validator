@@ -78,6 +78,8 @@ CREATE INDEX IF NOT EXISTS idx_log_doc      ON edit_log(document_id);
 -- migrations for databases created before these columns existed
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS assigned_to BIGINT REFERENCES users(id);
 CREATE INDEX IF NOT EXISTS idx_docs_assigned ON documents(assigned_to);
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_edited_by BIGINT REFERENCES users(id);
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_edited_at TIMESTAMPTZ;
 """
 
 SEED_USERS = [
