@@ -80,6 +80,9 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS assigned_to BIGINT REFERENCES use
 CREATE INDEX IF NOT EXISTS idx_docs_assigned ON documents(assigned_to);
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_edited_by BIGINT REFERENCES users(id);
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_edited_at TIMESTAMPTZ;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS digitized_text TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS digitized_status TEXT NOT NULL DEFAULT 'not_started';
+-- digitized_status: not_started | processing | ready | corrected | error
 """
 
 SEED_USERS = [

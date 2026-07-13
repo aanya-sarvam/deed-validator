@@ -4,3 +4,4 @@ pandas
 openpyxl
 psycopg[binary]
 bcrypt
+sarvamai

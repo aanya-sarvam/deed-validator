@@ -346,6 +346,97 @@ def get_pdf(doc_id: int, user=Depends(current_user)):
     return FileResponse(path, media_type="application/pdf")
 
 
+# ---------- full-text digitization (Sarvam Document Intelligence) ----------
+
+import os
+SARVAM_API_KEY = os.environ.get("SARVAM_API_KEY", "")
+DIGITIZE_LANG = os.environ.get("DIGITIZE_LANG", "od-IN")  # Odia default
+
+
+def _run_digitization(doc_id: int, pdf_path: str):
+    """Background: call Sarvam Document Intelligence on the PDF, store the text."""
+    try:
+        if not SARVAM_API_KEY:
+            with connect() as con:
+                con.execute("UPDATE documents SET digitized_status='error', digitized_text=%s "
+                            "WHERE id=%s",
+                            ("Digitization is not configured on this server "
+                             "(SARVAM_API_KEY not set). Ask an admin to enable it.", doc_id))
+                con.commit()
+            return
+        from sarvamai import SarvamAI
+        client = SarvamAI(api_subscription_key=SARVAM_API_KEY)
+        job = client.document_intelligence.create_job(language=DIGITIZE_LANG, output_format="md")
+        job.upload_file(pdf_path)
+        job.start()
+        job.wait_until_complete()
+        import tempfile, zipfile, glob
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "out.zip")
+            job.download_output(out)
+            with zipfile.ZipFile(out) as z:
+                z.extractall(td)
+            text = ""
+            for m in sorted(glob.glob(os.path.join(td, "**", "*.md"), recursive=True)):
+                text += open(m, encoding="utf-8").read() + "\n\n"
+        with connect() as con:
+            con.execute("UPDATE documents SET digitized_text=%s, digitized_status='ready' "
+                        "WHERE id=%s", (text.strip(), doc_id))
+            con.commit()
+    except Exception as e:
+        with connect() as con:
+            con.execute("UPDATE documents SET digitized_status='error', digitized_text=%s "
+                        "WHERE id=%s", (f"Digitization failed: {e}", doc_id))
+            con.commit()
+
+
+@app.post("/api/documents/{doc_id}/digitize")
+def digitize(doc_id: int, user=Depends(current_user)):
+    with connect() as con:
+        doc = con.execute("SELECT pdf_file, digitized_status FROM documents WHERE id=%s",
+                          (doc_id,)).fetchone()
+        if not doc:
+            raise HTTPException(404, "Document not found")
+        if not doc["pdf_file"]:
+            raise HTTPException(400, "No scan attached to digitize")
+        if doc["digitized_status"] == "processing":
+            return {"ok": True, "status": "processing"}
+        con.execute("UPDATE documents SET digitized_status='processing' WHERE id=%s", (doc_id,))
+        con.commit()
+    import threading
+    pdf_path = str(Path("static/scans") / doc["pdf_file"])
+    threading.Thread(target=_run_digitization, args=(doc_id, pdf_path), daemon=True).start()
+    return {"ok": True, "status": "processing"}
+
+
+@app.get("/api/documents/{doc_id}/digitized")
+def get_digitized(doc_id: int, user=Depends(current_user)):
+    with connect() as con:
+        d = con.execute("SELECT digitized_text, digitized_status FROM documents WHERE id=%s",
+                        (doc_id,)).fetchone()
+    if not d:
+        raise HTTPException(404, "Document not found")
+    return {"status": d["digitized_status"], "text": d["digitized_text"] or ""}
+
+
+class DigitizedText(BaseModel):
+    text: str
+
+
+@app.put("/api/documents/{doc_id}/digitized")
+def save_digitized(doc_id: int, body: DigitizedText, user=Depends(current_user)):
+    with connect() as con:
+        if not con.execute("SELECT 1 FROM documents WHERE id=%s", (doc_id,)).fetchone():
+            raise HTTPException(404, "Document not found")
+        con.execute("UPDATE documents SET digitized_text=%s, digitized_status='corrected', "
+                    "last_edited_by=%s, last_edited_at=now() WHERE id=%s",
+                    (body.text, user["id"], doc_id))
+        con.execute("INSERT INTO edit_log (document_id, action, user_id) "
+                    "VALUES (%s,'digitize_edit',%s)", (doc_id, user["id"]))
+        con.commit()
+    return {"ok": True}
+
+
 # ---------- search ----------
 
 PARTY_NAME_SQL = ("(SELECT string_agg(current_value, E'\\n' ORDER BY position) FROM fields f "
@@ -500,6 +591,35 @@ def skip(doc_id: int, user=Depends(current_user)):
 
 # ---------- admin ----------
 
+class ReopenIn(BaseModel):
+    assign_to: int | None = None
+
+
+@app.post("/api/documents/{doc_id}/reopen")
+def reopen(doc_id: int, body: ReopenIn, user=Depends(require_admin)):
+    """Admin-only: move a validated/flagged document back to pending so it can
+    be edited again, optionally reassigning it for re-checking. History kept."""
+    with connect() as con:
+        doc = con.execute("SELECT status FROM documents WHERE id=%s", (doc_id,)).fetchone()
+        if not doc:
+            raise HTTPException(404, "Document not found")
+        assign_sql, assign_params = "", []
+        if body.assign_to is not None:
+            if not con.execute("SELECT 1 FROM users WHERE id=%s AND role='expert'",
+                               (body.assign_to,)).fetchone():
+                raise HTTPException(404, "Expert not found")
+            assign_sql = ", assigned_to=%s"; assign_params = [body.assign_to]
+        con.execute(
+            "UPDATE documents SET status='pending', validated_by=NULL, validated_at=NULL, "
+            "flag_reason=NULL, locked_by=NULL, locked_at=NULL" + assign_sql +
+            " WHERE id=%s", assign_params + [doc_id])
+        con.execute("INSERT INTO edit_log (document_id, action, new_value, user_id) "
+                    "VALUES (%s,'reopen',%s,%s)",
+                    (doc_id, f"was {doc['status']}", user["id"]))
+        con.commit()
+    return {"ok": True}
+
+
 class AssignOneIn(BaseModel):
     expert_id: int | None = None  # None = unassign
 
@@ -647,6 +767,32 @@ def create_user(body: NewUser, user=Depends(require_admin)):
             con.commit()
         except Exception:
             raise HTTPException(409, "Username already exists")
+    return {"ok": True}
+
+
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: int, user=Depends(require_admin)):
+    """Delete an account. Guards: can't delete yourself or the last admin.
+    Their live assignments/locks are released; edit-log history is cleared."""
+    if user_id == user["id"]:
+        raise HTTPException(400, "You cannot delete your own account")
+    with connect() as con:
+        target = con.execute("SELECT role FROM users WHERE id=%s", (user_id,)).fetchone()
+        if not target:
+            raise HTTPException(404, "User not found")
+        if target["role"] == "admin":
+            admins = con.execute("SELECT COUNT(*) c FROM users WHERE role='admin'").fetchone()["c"]
+            if admins <= 1:
+                raise HTTPException(400, "Cannot delete the last admin account")
+        con.execute("UPDATE documents SET assigned_to=NULL WHERE assigned_to=%s", (user_id,))
+        con.execute("UPDATE documents SET status='pending', locked_by=NULL, locked_at=NULL "
+                    "WHERE locked_by=%s AND status='in_review'", (user_id,))
+        con.execute("UPDATE documents SET validated_by=NULL WHERE validated_by=%s", (user_id,))
+        con.execute("UPDATE documents SET last_edited_by=NULL WHERE last_edited_by=%s", (user_id,))
+        con.execute("DELETE FROM sessions WHERE user_id=%s", (user_id,))
+        con.execute("DELETE FROM edit_log WHERE user_id=%s", (user_id,))
+        con.execute("DELETE FROM users WHERE id=%s", (user_id,))
+        con.commit()
     return {"ok": True}
 
 
