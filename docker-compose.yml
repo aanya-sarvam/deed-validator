@@ -21,6 +21,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://deeds:${DB_PASSWORD:-change-me}@db:5432/deeds
+      SARVAM_API_KEY: ${SARVAM_API_KEY:-}
+      DIGITIZE_LANG: ${DIGITIZE_LANG:-or-IN}
     volumes:
       - ./static/scans:/app/static/scans
       - ./data:/app/data:ro

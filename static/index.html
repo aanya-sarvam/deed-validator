@@ -97,15 +97,29 @@
   .dots:hover { background: #e8ebf0; }
   .menu { position: absolute; right: 0; top: 26px; background: var(--card);
     border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 18px rgba(20,41,66,.14);
-    min-width: 150px; z-index: 30; overflow: hidden; }
+    min-width: 150px; z-index: 30; }
+  .menu > button:first-child { border-top-left-radius: 8px; border-top-right-radius: 8px; }
   .menu button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0;
     padding: 9px 14px; font-size: 13.5px; background: #fff; }
   .menu button:hover { background: var(--accent-soft); }
+  .submenu-wrap { position: relative; }
+  .submenu-wrap:hover .submenu { display: block; }
+  .has-sub { font-weight: 500; }
+  .submenu { display: none; position: absolute; right: 100%; top: 0; margin-right: 2px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(20,41,66,.14); min-width: 200px; z-index: 40; overflow: hidden; }
+  .submenu-label { padding: 7px 14px 3px; font-size: 11.5px; color: var(--muted);
+    border-top: 1px solid var(--line); }
   .pager { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
   .pager .info { color: var(--muted); font-size: 13px; }
 
   /* ---- validate (resizable) ---- */
   #validate { height: calc(100vh - 49px); display: flex; flex-direction: column; }
+  .tasktabs { display: inline-flex; gap: 2px; background: #eef1f5; border-radius: 8px; padding: 2px; }
+  .tasktab { border: 0; background: none; padding: 5px 14px; border-radius: 6px; font-size: 13px;
+    color: var(--muted); cursor: pointer; }
+  .tasktab.active { background: var(--card); color: var(--ink); font-weight: 500;
+    box-shadow: 0 1px 3px rgba(20,41,66,.1); }
   .vhead { display: flex; align-items: center; gap: 12px; padding: 8px 18px;
     background: var(--card); border-bottom: 1px solid var(--line); font-size: 14px; }
   .vmain { flex: 1; display: flex; min-height: 0; }
@@ -298,11 +312,34 @@
       <button class="small" onclick="backToBrowse()">&#8592; Back to records</button>
       <span class="mono" id="deedtitle"></span>
       <span class="chip in_review" id="statuspill"></span>
+      <span class="tasktabs">
+        <button id="tab-meta" class="tasktab active" onclick="showTask('meta')">Metadata</button>
+        <button id="tab-text" class="tasktab" onclick="showTask('text')">Full text</button>
+      </span>
       <span class="spacer" style="flex:1"></span>
       <span class="meta" id="queuemeta"></span>
     </div>
     <div class="vmain">
       <div id="formpane"></div>
+      <div id="textpane" style="display:none; overflow-y:auto; padding:16px 18px; flex:0 0 46%;">
+        <div id="text-empty" style="text-align:center; color:var(--muted); margin-top:40px">
+          <p>No digitized text yet.</p>
+          <button class="primary" onclick="doDigitize()">Digitize document</button>
+          <p style="font-size:12.5px; margin-top:10px">Runs Sarvam Document Intelligence on the scan and shows the extracted text here to correct against the PDF.</p>
+        </div>
+        <div id="text-working" style="display:none; text-align:center; color:var(--muted); margin-top:40px">
+          <p>Digitizing… this can take up to a minute. Checking automatically.</p>
+        </div>
+        <div id="text-editor" style="display:none">
+          <label>Full text — correct against the scan on the right</label>
+          <textarea id="fulltext" style="width:100%; min-height:60vh; font-family:inherit; line-height:1.7"></textarea>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:8px">
+            <button class="primary small" onclick="saveDigitized()">Save text</button>
+            <button class="small" onclick="doDigitize()">Re-digitize</button>
+            <span id="textsave" style="font-size:12px; color:var(--muted)"></span>
+          </div>
+        </div>
+      </div>
       <div class="divider" id="divider"></div>
       <div id="pdfpane">
         <div class="bar" id="pdfbar"></div>
@@ -314,7 +351,7 @@
       <span id="savestate">All changes saved</span>
       <button onclick="doSkip()">Skip</button>
       <button class="danger" onclick="doFlag()">Flag</button>
-      <button class="primary" onclick="doApprove()">Approve &amp; next &nbsp;<kbd>Ctrl</kbd>+<kbd>Enter</kbd></button>
+      <button class="primary" onclick="doApprove()">Approve &amp; next</button>
     </div>
   </div>
 
@@ -355,7 +392,7 @@
     </div>
     <div class="err" id="nu_err"></div>
     <h2>Existing users</h2>
-    <table class="stats"><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Validated</th></tr></thead>
+    <table class="stats"><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Validated</th><th></th></tr></thead>
       <tbody id="userrows"></tbody></table>
   </div>
 </div>
@@ -542,10 +579,30 @@ function menuHtml(r) {
        <button onclick="openDoc(${r.id});closeMenus()">Validate</button>`;
   const history = ROLE === 'admin'
     ? `<button onclick="showHistory(${r.id});closeMenus()">Change history</button>` : '';
+  let reopen = '';
+  if (ROLE === 'admin' && (r.status === 'validated' || r.status === 'flagged')) {
+    const expertOpts = EXPERTS.map(e =>
+      `<button onclick="reopenDoc(${r.id}, ${e.id});closeMenus()">↳ ${e.full_name}</button>`).join('');
+    reopen = `<div class="submenu-wrap">
+        <button class="has-sub">Reopen for editing ▸</button>
+        <div class="submenu">
+          <button onclick="reopenDoc(${r.id}, null);closeMenus()">Unlock only (unassigned)</button>
+          <div class="submenu-label">Reassign to expert for re-check:</div>
+          ${expertOpts || '<div class="submenu-label" style="color:var(--muted)">No experts yet</div>'}
+        </div>
+      </div>`;
+  }
   return `<div class="menu-wrap">
       <button class="dots" onclick="toggleMenu(event, ${r.id})">&#8942;</button>
-      <div class="menu" id="menu-${r.id}" style="display:none">${action}${history}</div>
+      <div class="menu" id="menu-${r.id}" style="display:none">${action}${reopen}${history}</div>
     </div>`;
+}
+async function reopenDoc(docId, assignTo) {
+  try {
+    await api(`/documents/${docId}/reopen`, { method: 'POST',
+      body: JSON.stringify({ assign_to: assignTo }) });
+    runSearch(PAGE);
+  } catch (e) { alert(e.message); }
 }
 function toggleMenu(ev, id) {
   ev.stopPropagation();
@@ -599,8 +656,59 @@ async function startQueue() {
   d.editable = true; renderDoc(d);
 }
 
+/* ---------- full-text digitization task (3) ---------- */
+let DIGIPOLL = null;
+function showTask(which) {
+  $('tab-meta').classList.toggle('active', which === 'meta');
+  $('tab-text').classList.toggle('active', which === 'text');
+  $('formpane').style.display = which === 'meta' ? 'block' : 'none';
+  $('textpane').style.display = which === 'text' ? 'block' : 'none';
+  if (which === 'text') loadDigitized();
+}
+async function loadDigitized() {
+  if (!DOC) return;
+  let d; try { d = await api(`/documents/${DOC.document.id}/digitized`); } catch (e) { return; }
+  renderDigiState(d);
+}
+function renderDigiState(d) {
+  const empty = $('text-empty'), working = $('text-working'), editor = $('text-editor');
+  empty.style.display = working.style.display = editor.style.display = 'none';
+  if (d.status === 'processing') {
+    working.style.display = 'block';
+    if (!DIGIPOLL) DIGIPOLL = setInterval(loadDigitized, 4000);
+  } else if (d.status === 'ready' || d.status === 'corrected' || (d.status === 'error' && d.text)) {
+    clearInterval(DIGIPOLL); DIGIPOLL = null;
+    editor.style.display = 'block';
+    $('fulltext').value = d.text;
+    $('fulltext').disabled = !(DOC && DOC.editable);
+    $('textsave').textContent = d.status === 'corrected' ? 'Corrected'
+      : (d.status === 'error' ? 'See message above' : 'Extracted — not yet corrected');
+  } else {
+    clearInterval(DIGIPOLL); DIGIPOLL = null;
+    empty.style.display = 'block';
+  }
+}
+async function doDigitize() {
+  $('text-empty').style.display = 'none';
+  $('text-working').style.display = 'block';
+  try {
+    await api(`/documents/${DOC.document.id}/digitize`, { method: 'POST' });
+    if (!DIGIPOLL) DIGIPOLL = setInterval(loadDigitized, 4000);
+  } catch (e) { alert(e.message); renderDigiState({ status: 'not_started' }); }
+}
+async function saveDigitized() {
+  $('textsave').textContent = 'Saving…';
+  try {
+    await api(`/documents/${DOC.document.id}/digitized`, { method: 'PUT',
+      body: JSON.stringify({ text: $('fulltext').value }) });
+    $('textsave').textContent = 'Saved';
+  } catch (e) { $('textsave').textContent = 'Save failed: ' + e.message; }
+}
+
 function renderDoc(d) {
   DOC = d; dirty = 0;
+  clearInterval(DIGIPOLL); DIGIPOLL = null;
+  showTask('meta');
   const doc = d.document, editable = !!d.editable;
   showView('validate');
   $('deedtitle').textContent = `Deed ${doc.deed_number} · ${doc.deed_type} · ${doc.sr_office}`;
@@ -793,8 +901,18 @@ async function doUnassign(id) {
 async function loadUsers() {
   const users = await api('/users');
   EXPERTS = users.filter(u => u.role === 'expert');
-  $('userrows').innerHTML = users.map(u =>
-    `<tr><td class="mono">${u.username}</td><td>${u.full_name}</td><td>${u.role}</td><td>${u.validated}</td></tr>`).join('');
+  $('userrows').innerHTML = users.map(u => {
+    const del = u.id !== UID
+      ? `<button class="small danger" onclick="deleteUser(${u.id}, '${u.username}')">Delete</button>`
+      : '<span style="color:var(--muted);font-size:12px">you</span>';
+    return `<tr><td class="mono">${u.username}</td><td>${u.full_name}</td>
+      <td>${u.role}</td><td>${u.validated}</td><td>${del}</td></tr>`;
+  }).join('');
+}
+async function deleteUser(id, uname) {
+  if (!confirm(`Delete account "${uname}"?\n\nTheir in-progress and assigned documents return to the pool. Validated work stays but is no longer attributed to them. This cannot be undone.`)) return;
+  try { await api(`/users/${id}`, { method: 'DELETE' }); loadUsers(); }
+  catch (e) { alert(e.message); }
 }
 async function createUser() {
   $('nu_err').textContent = '';
