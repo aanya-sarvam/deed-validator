@@ -12,11 +12,27 @@
     --fs: 15px;
   }
   * { box-sizing: border-box; }
+  html { font-size: calc(15px * var(--fscale, 1)); }
   body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-         font-size: var(--fs); line-height: 1.5; background: var(--paper); color: #22262c; }
+         font-size: 1rem; line-height: 1.5; background: var(--paper); color: #22262c; }
   .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  .odia-wrap input { font-family: "Noto Sans Oriya", system-ui, sans-serif; }
+  .kbd-btn { font-size: 0.75rem; padding: 1px 8px; margin-left: 8px; border:1px solid var(--line);
+    border-radius: 5px; background:#fff; cursor:pointer; color: var(--ink); }
+  .kbd-btn:hover { background: var(--accent-soft); }
+  #odia-kbd { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+    width: min(760px, 94vw); background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; box-shadow: 0 8px 30px rgba(20,41,66,.22); z-index: 60; padding: 10px 12px; }
+  #odia-kbd .kbd-head { display:flex; align-items:center; gap:8px; font-size:0.85rem;
+    color: var(--muted); margin-bottom: 8px; }
+  #odia-kbd .kbd-head button { font-size:0.75rem; padding:2px 10px; }
+  .kbd-keys { display:flex; flex-wrap:wrap; gap:5px; }
+  .kbd-keys button { min-width: 38px; height: 38px; font-size: 1.15rem; padding: 0 6px;
+    border:1px solid var(--line); border-radius:7px; background:#fbfcfd; cursor:pointer;
+    font-family:"Noto Sans Oriya", system-ui, sans-serif; }
+  .kbd-keys button:hover { background: var(--accent-soft); border-color: var(--ink); }
   .serif { font-family: Georgia, "Times New Roman", serif; }
-  label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4px; }
+  label { display: block; font-size: 0.8333rem; color: var(--muted); margin: 12px 0 4px; }
   input, textarea, select { width: 100%; padding: 8px 10px; border: 1px solid var(--line);
     border-radius: 6px; font: inherit; background: #fff; }
   input:focus, textarea:focus, select:focus { outline: 2px solid var(--ink);
@@ -28,8 +44,8 @@
   button.primary:hover { background: var(--ink-deep); }
   button.danger { color: var(--bad); border-color: #e4c9c9; }
   button.danger:hover { background: #faf1f1; }
-  button.small { padding: 4px 12px; font-size: 13px; }
-  .err { color: var(--bad); font-size: 13px; min-height: 18px; margin-top: 10px; }
+  button.small { padding: 4px 12px; font-size: 0.8667rem; }
+  .err { color: var(--bad); font-size: 0.8667rem; min-height: 18px; margin-top: 10px; }
   .view { display: none; }
   a.link { color: var(--ink); cursor: pointer; text-decoration: underline; }
 
@@ -37,62 +53,64 @@
   #login { min-height: 100vh; display: flex; }
   #login .side { flex: 1; background: var(--ink); color: #e8edf4; display: flex;
     flex-direction: column; justify-content: center; padding: 60px; }
-  #login .side h2 { font-family: Georgia, serif; font-weight: 500; font-size: 26px;
+  #login .side h2 { font-family: Georgia, serif; font-weight: 500; font-size: 1.7333rem;
     margin: 18px 0 10px; color: #fff; }
-  #login .side p { max-width: 380px; color: #b9c6d8; font-size: 14.5px; }
+  #login .side p { max-width: 380px; color: #b9c6d8; font-size: 0.9667rem; }
   .crest { width: 58px; height: 58px; border: 2px solid #b9c6d8; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
-    font-family: Georgia, serif; font-weight: 500; font-size: 20px; color: #fff; letter-spacing: 1px; }
+    font-family: Georgia, serif; font-weight: 500; font-size: 1.3333rem; color: #fff; letter-spacing: 1px; }
   #login .formside { width: 460px; background: var(--card); display: flex;
     align-items: center; justify-content: center; border-left: 1px solid var(--line); }
   #login .formbox { width: 320px; }
-  #login .formbox h1 { font-family: Georgia, serif; font-weight: 500; font-size: 20px;
+  #login .formbox h1 { font-family: Georgia, serif; font-weight: 500; font-size: 1.3333rem;
     color: var(--ink); margin: 0 0 2px; }
-  #login .formbox p.sub { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
-  .toggle-line { margin-top: 16px; font-size: 13px; color: var(--muted); }
+  #login .formbox p.sub { margin: 0 0 18px; color: var(--muted); font-size: 0.8667rem; }
+  .toggle-line { margin-top: 16px; font-size: 0.8667rem; color: var(--muted); }
   @media (max-width: 760px) { #login .side { display: none; } #login .formside { width: 100%; border: 0; } }
 
   /* ---- shell ---- */
   header.bar { display: flex; align-items: center; gap: 14px; padding: 10px 18px;
-    background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20; }
-  header.bar .brand { font-family: Georgia, serif; font-weight: 500; font-size: 16px;
+    background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20;
+    flex-wrap: wrap; row-gap: 8px; }
+  header.bar .brand { font-family: Georgia, serif; font-weight: 500; font-size: 1.0667rem;
     color: var(--ink); white-space: nowrap; display: flex; align-items: center; gap: 10px; }
   header.bar .brand .mini { width: 26px; height: 26px; border: 1.5px solid var(--ink);
-    border-radius: 50%; font-size: 11px; display: flex; align-items: center; justify-content: center; }
-  header.bar nav { display: flex; gap: 4px; margin-left: 10px; }
+    border-radius: 50%; font-size: 0.7333rem; display: flex; align-items: center; justify-content: center; }
+  header.bar nav { display: flex; gap: 4px; margin-left: 10px; flex-wrap: wrap; }
   header.bar nav button { border: 0; background: none; padding: 6px 12px; border-radius: 6px;
-    color: var(--muted); font-size: 14px; }
+    color: var(--muted); font-size: 0.9333rem; white-space: nowrap; }
   header.bar nav button.active { background: var(--accent-soft); color: var(--ink); font-weight: 500; }
   header.bar .spacer { flex: 1; }
-  header.bar .meta { font-size: 13px; color: var(--muted); white-space: nowrap; }
-  .fontctl { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
-  .fontctl select { width: auto; padding: 4px 8px; font-size: 12.5px; }
+  header.bar .meta { font-size: 0.8667rem; color: var(--muted); white-space: nowrap; }
+  html, body { max-width: 100%; overflow-x: hidden; }
+  .fontctl { display: flex; align-items: center; gap: 6px; font-size: 0.8333rem; color: var(--muted); }
+  .fontctl select { width: auto; padding: 4px 8px; font-size: 0.8333rem; }
 
   /* ---- records ---- */
   #browse { padding: 20px 24px; max-width: 1200px; margin: 0 auto; }
-  #browse h1 { font-family: Georgia, serif; font-weight: 500; font-size: 22px; color: var(--ink); margin: 0 0 4px; }
+  #browse h1 { font-family: Georgia, serif; font-weight: 500; font-size: 1.4667rem; color: var(--ink); margin: 0 0 4px; }
   .toolbar { display: flex; align-items: center; gap: 12px; margin: 14px 0 10px; flex-wrap: wrap; }
-  .toolbar .grp { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .toolbar .grp { display: flex; align-items: center; gap: 6px; font-size: 0.8667rem; color: var(--muted); }
   .toolbar select { width: auto; padding: 6px 10px; }
-  #results-meta { color: var(--muted); font-size: 13.5px; margin: 6px 0; }
+  #results-meta { color: var(--muted); font-size: 0.9rem; margin: 6px 0; }
   table.records { width: 100%; border-collapse: collapse; background: var(--card);
-    border: 1px solid var(--line); border-radius: 8px; overflow: visible; font-size: 13.5px; }
+    border: 1px solid var(--line); border-radius: 8px; overflow: visible; font-size: 0.9rem; }
   table.records th { text-align: left; background: #eef1f5; color: var(--ink);
     font-weight: 500; padding: 9px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
   table.records td { padding: 9px 12px; border-bottom: 1px solid #e8ebf0; vertical-align: middle; }
   table.records tr:hover td { background: #f7f9fb; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem;
     padding: 2px 10px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
   .chip.pending    { color: var(--muted); border-color: var(--line); background: #f4f5f7; }
   .chip.in_review  { color: var(--warn); border-color: #e3cdb6; background: #faf4ec; }
   .chip.validated  { color: var(--ok); border-color: #bfd8c9; background: #eef6f1; }
   .chip.flagged    { color: var(--bad); border-color: #e4c9c9; background: #faf1f1; }
   .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-  .assign-cell select { width: auto; padding: 3px 6px; font-size: 12px; max-width: 140px; }
+  .assign-cell select { width: auto; padding: 3px 6px; font-size: 0.8rem; max-width: 140px; }
 
   /* three-dots menu */
   .menu-wrap { position: relative; display: inline-block; }
-  .dots { border: 0; background: none; font-size: 20px; line-height: 1; padding: 2px 8px;
+  .dots { border: 0; background: none; font-size: 1.3333rem; line-height: 1; padding: 2px 8px;
     cursor: pointer; color: var(--muted); border-radius: 6px; }
   .dots:hover { background: #e8ebf0; }
   .menu { position: absolute; right: 0; top: 26px; background: var(--card);
@@ -100,7 +118,7 @@
     min-width: 150px; z-index: 30; }
   .menu > button:first-child { border-top-left-radius: 8px; border-top-right-radius: 8px; }
   .menu button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0;
-    padding: 9px 14px; font-size: 13.5px; background: #fff; }
+    padding: 9px 14px; font-size: 0.9rem; background: #fff; }
   .menu button:hover { background: var(--accent-soft); }
   .submenu-wrap { position: relative; }
   .submenu-wrap:hover .submenu { display: block; }
@@ -108,20 +126,20 @@
   .submenu { display: none; position: absolute; right: 100%; top: 0; margin-right: 2px;
     background: var(--card); border: 1px solid var(--line); border-radius: 8px;
     box-shadow: 0 6px 18px rgba(20,41,66,.14); min-width: 200px; z-index: 40; overflow: hidden; }
-  .submenu-label { padding: 7px 14px 3px; font-size: 11.5px; color: var(--muted);
+  .submenu-label { padding: 7px 14px 3px; font-size: 0.7667rem; color: var(--muted);
     border-top: 1px solid var(--line); }
   .pager { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
-  .pager .info { color: var(--muted); font-size: 13px; }
+  .pager .info { color: var(--muted); font-size: 0.8667rem; }
 
   /* ---- validate (resizable) ---- */
   #validate { height: calc(100vh - 49px); display: flex; flex-direction: column; }
   .tasktabs { display: inline-flex; gap: 2px; background: #eef1f5; border-radius: 8px; padding: 2px; }
-  .tasktab { border: 0; background: none; padding: 5px 14px; border-radius: 6px; font-size: 13px;
+  .tasktab { border: 0; background: none; padding: 5px 14px; border-radius: 6px; font-size: 0.8667rem;
     color: var(--muted); cursor: pointer; }
   .tasktab.active { background: var(--card); color: var(--ink); font-weight: 500;
     box-shadow: 0 1px 3px rgba(20,41,66,.1); }
   .vhead { display: flex; align-items: center; gap: 12px; padding: 8px 18px;
-    background: var(--card); border-bottom: 1px solid var(--line); font-size: 14px; }
+    background: var(--card); border-bottom: 1px solid var(--line); font-size: 0.9333rem; }
   .vmain { flex: 1; display: flex; min-height: 0; }
   #formpane { overflow-y: auto; padding: 16px 18px 90px; flex: 0 0 46%; }
   .divider { flex: 0 0 6px; cursor: col-resize; background: var(--line);
@@ -130,42 +148,42 @@
   #pdfpane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .section { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
              padding: 12px 16px 16px; margin-bottom: 12px; }
-  .section h3 { margin: 0 0 8px; font-family: Georgia, serif; font-weight: 500; font-size: 13px;
+  .section h3 { margin: 0 0 8px; font-family: Georgia, serif; font-weight: 500; font-size: 0.8667rem;
     line-height: 1; color: var(--ink); letter-spacing: .4px; text-transform: uppercase; }
   .frow { margin: 8px 0 0; }
   .frow input.changed, .frow textarea.changed { background: var(--edited);
     border-color: var(--edited-border); box-shadow: 0 0 0 1px var(--edited-border); }
-  .ocr-orig { font-size: 11.5px; color: var(--warn); margin-top: 2px; display: none; }
+  .ocr-orig { font-size: 0.7667rem; color: var(--warn); margin-top: 2px; display: none; }
   .ocr-orig.show { display: block; }
-  .edited-by { font-size: 11px; color: var(--muted); margin-top: 2px; display: none; }
+  .edited-by { font-size: 0.7333rem; color: var(--muted); margin-top: 2px; display: none; }
   .edited-by.show { display: block; }
   textarea { resize: vertical; min-height: 54px; }
-  #pdfpane .bar { padding: 6px 14px; font-size: 12.5px; color: var(--muted);
+  #pdfpane .bar { padding: 6px 14px; font-size: 0.8333rem; color: var(--muted);
                   border-bottom: 1px solid var(--line); background: var(--card); }
   #pdfframe { flex: 1; border: 0; width: 100%; background: #3a3d42; }
   #nopdf { flex: 1; display: none; align-items: center; justify-content: center; color: var(--muted); }
   .vfoot { display: flex; align-items: center; gap: 10px; padding: 10px 18px;
     background: var(--card); border-top: 1px solid var(--line); }
-  #savestate { font-size: 12px; color: var(--muted); flex: 1; }
+  #savestate { font-size: 0.8rem; color: var(--muted); flex: 1; }
   kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px;
         border-radius: 4px; padding: 0 5px; background: #f0f2f5; }
   .robanner { background: #faf4ec; color: var(--warn); border: 1px solid #e3cdb6;
-    border-radius: 6px; padding: 8px 12px; font-size: 13px; margin-bottom: 12px; }
+    border-radius: 6px; padding: 8px 12px; font-size: 0.8667rem; margin-bottom: 12px; }
 
   /* ---- admin pages ---- */
   .page { padding: 26px 24px; max-width: 1100px; margin: 0 auto; }
-  .page h1 { font-family: Georgia, serif; font-weight: 500; font-size: 22px; color: var(--ink); }
-  .page h2 { font-family: Georgia, serif; font-weight: 500; font-size: 17px; color: var(--ink); margin-top: 26px; }
+  .page h1 { font-family: Georgia, serif; font-weight: 500; font-size: 1.4667rem; color: var(--ink); }
+  .page h2 { font-family: Georgia, serif; font-weight: 500; font-size: 1.1333rem; color: var(--ink); margin-top: 26px; }
   table.stats { border-collapse: collapse; width: 100%; background: var(--card);
                 border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
   table.stats th, table.stats td { text-align: left; padding: 8px 14px;
-                border-bottom: 1px solid var(--line); font-size: 14px; }
+                border-bottom: 1px solid var(--line); font-size: 0.9333rem; }
   table.stats th { background: #eef1f5; font-weight: 500; color: var(--ink); }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 10px; margin: 14px 0 6px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
-  .card .num { font-family: Georgia, serif; font-weight: 500; font-size: 22px; color: var(--ink); }
-  .card .lbl { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .card .num { font-family: Georgia, serif; font-weight: 500; font-size: 1.4667rem; color: var(--ink); }
+  .card .lbl { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
   .pbar { height: 8px; background: #e6eaf0; border-radius: 6px; overflow: hidden; margin: 8px 0 2px; }
   .pbar > div { height: 100%; background: var(--ok); }
   .newuser { display: grid; grid-template-columns: 1fr 1fr 1fr 130px auto; gap: 10px;
@@ -228,16 +246,18 @@
     <nav>
       <button id="nav-browse" class="active" onclick="showView('browse')">Records</button>
       <button id="nav-progress" onclick="showView('progress')" style="display:none">Dashboard</button>
+      <button id="nav-monitor" onclick="showView('monitor')" style="display:none">Review dashboard</button>
       <button id="nav-assign" onclick="showView('assign')" style="display:none">Assign work</button>
       <button id="nav-accounts" onclick="showView('accounts')" style="display:none">Accounts</button>
     </nav>
     <span class="spacer"></span>
+    <span id="google_translate_element" class="gtranslate"></span>
     <span class="fontctl">Font
       <select id="fontsize" onchange="setFont(this.value)">
-        <option value="13px">Small</option>
-        <option value="15px" selected>Medium</option>
-        <option value="17px">Large</option>
-        <option value="19px">Extra large</option>
+        <option value="0.87">Small</option>
+        <option value="1" selected>Medium</option>
+        <option value="1.15">Large</option>
+        <option value="1.3">Extra large</option>
       </select>
     </span>
     <span class="meta" id="usermeta"></span>
@@ -262,27 +282,14 @@
   <div id="browse" class="view">
     <h1>Records</h1>
     <div class="toolbar">
-      <div class="grp">Sort by
-        <select id="sort_by" onchange="runSearch(1)">
-          <option value="id">Document no</option>
-          <option value="deed_number">Deed number</option>
-          <option value="year">Year</option>
-          <option value="status">Status</option>
-          <option value="last_edited">Last edited</option>
-        </select>
-      </div>
-      <div class="grp">Order
-        <select id="sort_order" onchange="runSearch(1)">
-          <option value="asc">Ascending</option>
-          <option value="desc">Descending</option>
-        </select>
-      </div>
       <div class="grp">Status
         <select id="f_status" onchange="runSearch(1)">
           <option value="">All</option>
           <option value="pending">Pending</option>
           <option value="in_review">In review</option>
           <option value="validated">Validated</option>
+          <option value="in_monitor_review">In monitor review</option>
+          <option value="reviewed">Monitored</option>
           <option value="flagged">Flagged</option>
         </select>
       </div>
@@ -292,7 +299,7 @@
         </select>
       </div>
       <span class="spacer" style="flex:1"></span>
-      <button class="primary small" onclick="startQueue()">Validate next</button>
+      <button class="primary small" id="queue-btn" onclick="startQueueBtn()">Validate next</button>
     </div>
     <div id="results-meta"></div>
     <table class="records">
@@ -323,20 +330,15 @@
       <div id="formpane"></div>
       <div id="textpane" style="display:none; overflow-y:auto; padding:16px 18px; flex:0 0 46%;">
         <div id="text-empty" style="text-align:center; color:var(--muted); margin-top:40px">
-          <p>No digitized text yet.</p>
-          <button class="primary" onclick="doDigitize()">Digitize document</button>
-          <p style="font-size:12.5px; margin-top:10px">Runs Sarvam Document Intelligence on the scan and shows the extracted text here to correct against the PDF.</p>
-        </div>
-        <div id="text-working" style="display:none; text-align:center; color:var(--muted); margin-top:40px">
-          <p>Digitizing… this can take up to a minute. Checking automatically.</p>
+          <p>No full text available for this document yet.</p>
+          <p style="font-size: 0.8333rem; margin-top:10px">The digitised text comes from Akshar. Once it's been loaded for this deed, it will appear here for the expert to correct against the scan.</p>
         </div>
         <div id="text-editor" style="display:none">
           <label>Full text — correct against the scan on the right</label>
           <textarea id="fulltext" style="width:100%; min-height:60vh; font-family:inherit; line-height:1.7"></textarea>
           <div style="display:flex; gap:8px; align-items:center; margin-top:8px">
             <button class="primary small" onclick="saveDigitized()">Save text</button>
-            <button class="small" onclick="doDigitize()">Re-digitize</button>
-            <span id="textsave" style="font-size:12px; color:var(--muted)"></span>
+            <span id="textsave" style="font-size: 0.8rem; color:var(--muted)"></span>
           </div>
         </div>
       </div>
@@ -349,18 +351,21 @@
     </div>
     <div class="vfoot" id="vfoot">
       <span id="savestate">All changes saved</span>
-      <button onclick="doSkip()">Skip</button>
-      <button class="danger" onclick="doFlag()">Flag</button>
-      <button class="primary" onclick="doApprove()">Approve &amp; next</button>
+      <button onclick="doSkip()" id="btn-skip">Skip</button>
+      <button class="danger" onclick="doFlag()" id="btn-flag">Flag</button>
+      <button class="primary" onclick="doApprove()" id="btn-approve">Approve &amp; next</button>
+      <button class="primary" onclick="doReview()" id="btn-review" style="display:none">Mark monitored &amp; next</button>
     </div>
   </div>
 
   <div id="progress" class="view page"></div>
 
+  <div id="monitor" class="view page"></div>
+
   <!-- ---- assign ---- -->
   <div id="assign" class="view page">
     <h1>Assign work</h1>
-    <p style="color:var(--muted);font-size:13.5px;margin-top:-8px">
+    <p style="color:var(--muted);font-size: 0.9rem;margin-top:-8px">
       Bulk-assign a batch to an expert here, or assign individual rows directly in the
       Records tab. Experts only see documents assigned to them.</p>
     <div class="newuser" style="grid-template-columns:1fr 120px 120px 120px auto">
@@ -371,12 +376,12 @@
       <button class="primary" onclick="doAssign()">Assign</button>
     </div>
     <div class="err" id="as_err"></div>
-    <div id="as_ok" style="color:var(--ok);font-size:13px;min-height:18px"></div>
+    <div id="as_ok" style="color:var(--ok);font-size: 0.8667rem;min-height:18px"></div>
     <h2>Current workload</h2>
     <table class="stats"><thead><tr><th>Expert</th><th>Assigned (open)</th>
       <th>Validated</th><th>Today</th><th></th></tr></thead>
       <tbody id="as_rows"></tbody></table>
-    <p style="color:var(--muted);font-size:13px" id="as_pool"></p>
+    <p style="color:var(--muted);font-size: 0.8667rem" id="as_pool"></p>
   </div>
 
   <!-- ---- accounts ---- -->
@@ -387,7 +392,7 @@
       <div><label>Full name</label><input id="nu_name"></div>
       <div><label>Password</label><input id="nu_pass" type="password"></div>
       <div><label>Role</label>
-        <select id="nu_role"><option value="expert">Expert</option><option value="admin">Admin</option></select></div>
+        <select id="nu_role"><option value="expert">Expert</option><option value="monitor">Monitor</option><option value="admin">Admin</option></select></div>
       <button class="primary" onclick="createUser()">Create</button>
     </div>
     <div class="err" id="nu_err"></div>
@@ -399,17 +404,27 @@
 
 <div id="modal-root"></div>
 
+<div id="odia-kbd" style="display:none">
+  <div class="kbd-head">
+    <span>Odia keyboard</span>
+    <span class="spacer" style="flex:1"></span>
+    <button type="button" onclick="odiaBackspace()">⌫ back</button>
+    <button type="button" onclick="document.getElementById('odia-kbd').style.display='none'">✕ close</button>
+  </div>
+  <div id="odia-keys" class="kbd-keys"></div>
+</div>
+
 <script>
 let TOKEN = localStorage.getItem('deed_token') || '';
 let ROLE  = localStorage.getItem('deed_role')  || '';
 let NAME  = localStorage.getItem('deed_name')  || '';
 let UID   = +(localStorage.getItem('deed_uid') || 0);
-let DOC = null, dirty = 0, PAGE = 1, QUEUE_MODE = false;
+let DOC = null, dirty = 0, PAGE = 1, QUEUE_MODE = false, REVIEW_MODE = false;
 let EXPERTS = [];  // cached for the per-row assign dropdowns
 
 const $ = id => document.getElementById(id);
 const PERSON_ICON = '<svg viewBox="0 0 16 16" fill="currentColor" style="width:12px;height:12px"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3 3-4.5 6-4.5s6 1.5 6 4.5z"/></svg>';
-const STATUS_LABEL = {pending:'Pending', in_review:'In review', validated:'Validated', flagged:'Flagged'};
+const STATUS_LABEL = {pending:'Pending', in_review:'In review', validated:'Validated', flagged:'Flagged', in_monitor_review:'In monitor review', reviewed:'Monitored'};
 
 const api = (path, opts = {}) =>
   fetch(`/api${path}${path.includes('?') ? '&' : '?'}token=${TOKEN}`, {
@@ -421,12 +436,12 @@ const api = (path, opts = {}) =>
 
 /* ---------- font size (5) ---------- */
 function setFont(v) {
-  document.documentElement.style.setProperty('--fs', v);
-  localStorage.setItem('deed_fs', v);
+  document.documentElement.style.setProperty('--fscale', v);
+  localStorage.setItem('deed_fscale', v);
 }
 (function initFont(){
-  const v = localStorage.getItem('deed_fs');
-  if (v) { document.documentElement.style.setProperty('--fs', v); }
+  const v = localStorage.getItem('deed_fscale');
+  if (v) { document.documentElement.style.setProperty('--fscale', v); }
 })();
 
 /* ---------- login / signup (1) ---------- */
@@ -466,8 +481,8 @@ function saveSession(d) {
 }
 $('p').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 $('su_pass').addEventListener('keydown', e => { if (e.key === 'Enter') doSignup(); });
-function logout() { const fs = localStorage.getItem('deed_fs'); localStorage.clear();
-  if (fs) localStorage.setItem('deed_fs', fs); location.reload(); }
+function logout() { const fs = localStorage.getItem('deed_fscale'); localStorage.clear();
+  if (fs) localStorage.setItem('deed_fscale', fs); location.reload(); }
 
 function togglePw() {
   const p = $('pwpanel');
@@ -488,24 +503,30 @@ async function changePw() {
 function enterApp() {
   $('login').style.display = 'none';
   $('shell').style.display = 'block';
-  $('fontsize').value = getComputedStyle(document.documentElement).getPropertyValue('--fs').trim() || '15px';
+  $('fontsize').value = localStorage.getItem('deed_fscale') || '1';
   $('usermeta').textContent = `${NAME} · ${ROLE}`;
   if (ROLE === 'admin') {
     $('nav-progress').style.display = '';
     $('nav-assign').style.display = '';
     $('nav-accounts').style.display = '';
+    $('nav-monitor').style.display = '';
+  }
+  if (ROLE === 'monitor') {
+    $('nav-monitor').style.display = '';
+    const qb = $('queue-btn'); if (qb) qb.textContent = 'Review next';
   }
   showView('browse');
   runSearch(1);
 }
 
 function showView(name) {
-  for (const v of ['browse', 'validate', 'progress', 'assign', 'accounts']) $(v).style.display = 'none';
-  for (const n of ['browse', 'progress', 'assign', 'accounts']) {
+  for (const v of ['browse', 'validate', 'progress', 'monitor', 'assign', 'accounts']) $(v).style.display = 'none';
+  for (const n of ['browse', 'progress', 'monitor', 'assign', 'accounts']) {
     const b = $('nav-' + n); if (b) b.classList.toggle('active', n === name);
   }
   $(name).style.display = name === 'validate' ? 'flex' : 'block';
   if (name === 'progress') loadProgress();
+  if (name === 'monitor') loadMonitor();
   if (name === 'assign') loadAssign();
   if (name === 'accounts') loadUsers();
 }
@@ -534,8 +555,7 @@ async function runSearch(page) {
     try { EXPERTS = (await api('/users')).filter(u => u.role === 'expert'); } catch (e) {}
   }
   const p = new URLSearchParams({
-    status: $('f_status').value, sort_by: $('sort_by').value,
-    sort_order: $('sort_order').value, page: PAGE, per_page: $('per_page').value });
+    status: $('f_status').value, page: PAGE, per_page: $('per_page').value });
   const d = await api('/search?' + p);
 
   const cols = ROLE === 'admin' ? REC_COLS_ADMIN : REC_COLS_EXPERT;
@@ -552,7 +572,10 @@ async function runSearch(page) {
   d.results.forEach((r, i) => {
     const docNo = (d.page - 1) * d.per_page + i + 1;
     const tr = document.createElement('tr');
-    const statusCell = `<span class="chip ${r.status}"><span class="dot"></span>${STATUS_LABEL[r.status]}</span>`;
+    tr.style.cursor = 'pointer';
+    tr.title = 'Click to open for validation';
+    tr.onclick = () => openDoc(r.id);   // #5: row click → validate mode
+    const statusCell = `<span class="chip ${r.status}"><span class="dot"></span>${STATUS_LABEL[r.status] || r.status || 'Pending'}</span>`;
     const editedBy = r.last_edited_name || '—';
     const editedAt = r.last_edited_at || '—';
     let cells = `<td class="mono">${docNo}</td>
@@ -562,9 +585,9 @@ async function runSearch(page) {
       const opts = ['<option value="">— unassigned —</option>'].concat(
         EXPERTS.map(e => `<option value="${e.id}" ${e.id===r.assigned_id?'selected':''}>${e.full_name}</option>`)
       ).join('');
-      cells += `<td class="assign-cell"><select onchange="assignRow(${r.id}, this.value)">${opts}</select></td>`;
+      cells += `<td class="assign-cell" onclick="event.stopPropagation()"><select onchange="assignRow(${r.id}, this.value)">${opts}</select></td>`;
     }
-    cells += `<td>${menuHtml(r)}</td>`;
+    cells += `<td onclick="event.stopPropagation()">${menuHtml(r)}</td>`;
     tr.innerHTML = cells;
     tb.appendChild(tr);
   });
@@ -573,14 +596,14 @@ async function runSearch(page) {
 }
 
 function menuHtml(r) {
-  const action = (r.status === 'validated' || r.status === 'flagged')
-    ? `<button onclick="openDoc(${r.id});closeMenus()">View</button>`
-    : `<button onclick="openDoc(${r.id});closeMenus()">View</button>
-       <button onclick="openDoc(${r.id});closeMenus()">Validate</button>`;
-  const history = ROLE === 'admin'
+  const canValidate = !['validated','flagged','reviewed'].includes(r.status);
+  const actionLabel = ROLE === 'monitor' ? 'Review' : 'Validate';
+  const action = `<button onclick="viewDoc(${r.id});closeMenus()">View (read-only)</button>` +
+    (canValidate ? `<button onclick="openDoc(${r.id});closeMenus()">${actionLabel}</button>` : '');
+  const history = (ROLE === 'admin' || ROLE === 'monitor')
     ? `<button onclick="showHistory(${r.id});closeMenus()">Change history</button>` : '';
   let reopen = '';
-  if (ROLE === 'admin' && (r.status === 'validated' || r.status === 'flagged')) {
+  if (ROLE === 'admin' && (r.status === 'validated' || r.status === 'flagged' || r.status === 'reviewed')) {
     const expertOpts = EXPERTS.map(e =>
       `<button onclick="reopenDoc(${r.id}, ${e.id});closeMenus()">↳ ${e.full_name}</button>`).join('');
     reopen = `<div class="submenu-wrap">
@@ -645,19 +668,40 @@ function closeModal() { $('modal-root').innerHTML = ''; }
 
 /* ---------- validate ---------- */
 async function openDoc(id) {
-  QUEUE_MODE = false;
-  try { renderDoc(await api(`/documents/${id}/claim`, { method: 'POST' })); }
-  catch (e) { alert(e.message); runSearch(PAGE); }
+  QUEUE_MODE = false; REVIEW_MODE = false;
+  try {
+    const d = await api(`/documents/${id}/claim`, { method: 'POST' });
+    // if a monitor opens a review-pool deed, treat subsequent actions as review flow
+    if (ROLE === 'monitor' && d.document && d.document.status === 'in_monitor_review') REVIEW_MODE = true;
+    renderDoc(d);
+  } catch (e) { alert(e.message); runSearch(PAGE); }
+}
+async function viewDoc(id) {
+  // read-only view: fetch the doc without claiming/locking it
+  QUEUE_MODE = false; REVIEW_MODE = false;
+  try {
+    const d = await api(`/documents/${id}/view`);
+    d.editable = false;
+    renderDoc(d);
+  } catch (e) { alert(e.message); runSearch(PAGE); }
+}
+function startQueueBtn() {
+  if (ROLE === 'monitor') startReviewQueue(); else startQueue();
 }
 async function startQueue() {
-  QUEUE_MODE = true;
+  QUEUE_MODE = true; REVIEW_MODE = false;
   const d = await api('/queue/next');
-  if (!d.document) { alert('No documents available to validate.'); runSearch(PAGE); return; }
+  if (!d.document) { alert('No documents available to validate.'); showView('browse'); runSearch(PAGE); return; }
+  d.editable = true; renderDoc(d);
+}
+async function startReviewQueue() {
+  REVIEW_MODE = true; QUEUE_MODE = false;
+  const d = await api('/monitor/next');
+  if (!d.document) { alert('No documents awaiting review.'); showView('monitor'); return; }
   d.editable = true; renderDoc(d);
 }
 
 /* ---------- full-text digitization task (3) ---------- */
-let DIGIPOLL = null;
 function showTask(which) {
   $('tab-meta').classList.toggle('active', which === 'meta');
   $('tab-text').classList.toggle('active', which === 'text');
@@ -668,33 +712,17 @@ function showTask(which) {
 async function loadDigitized() {
   if (!DOC) return;
   let d; try { d = await api(`/documents/${DOC.document.id}/digitized`); } catch (e) { return; }
-  renderDigiState(d);
-}
-function renderDigiState(d) {
-  const empty = $('text-empty'), working = $('text-working'), editor = $('text-editor');
-  empty.style.display = working.style.display = editor.style.display = 'none';
-  if (d.status === 'processing') {
-    working.style.display = 'block';
-    if (!DIGIPOLL) DIGIPOLL = setInterval(loadDigitized, 4000);
-  } else if (d.status === 'ready' || d.status === 'corrected' || (d.status === 'error' && d.text)) {
-    clearInterval(DIGIPOLL); DIGIPOLL = null;
+  const empty = $('text-empty'), editor = $('text-editor');
+  if (d.text && d.text.trim()) {
+    empty.style.display = 'none';
     editor.style.display = 'block';
     $('fulltext').value = d.text;
     $('fulltext').disabled = !(DOC && DOC.editable);
-    $('textsave').textContent = d.status === 'corrected' ? 'Corrected'
-      : (d.status === 'error' ? 'See message above' : 'Extracted — not yet corrected');
+    $('textsave').textContent = d.status === 'corrected' ? 'Corrected' : 'Loaded — not yet corrected';
   } else {
-    clearInterval(DIGIPOLL); DIGIPOLL = null;
+    editor.style.display = 'none';
     empty.style.display = 'block';
   }
-}
-async function doDigitize() {
-  $('text-empty').style.display = 'none';
-  $('text-working').style.display = 'block';
-  try {
-    await api(`/documents/${DOC.document.id}/digitize`, { method: 'POST' });
-    if (!DIGIPOLL) DIGIPOLL = setInterval(loadDigitized, 4000);
-  } catch (e) { alert(e.message); renderDigiState({ status: 'not_started' }); }
 }
 async function saveDigitized() {
   $('textsave').textContent = 'Saving…';
@@ -707,16 +735,21 @@ async function saveDigitized() {
 
 function renderDoc(d) {
   DOC = d; dirty = 0;
-  clearInterval(DIGIPOLL); DIGIPOLL = null;
   showTask('meta');
   const doc = d.document, editable = !!d.editable;
   showView('validate');
   $('deedtitle').textContent = `Deed ${doc.deed_number} · ${doc.deed_type} · ${doc.sr_office}`;
   const pill = $('statuspill');
   pill.className = 'chip ' + doc.status;
-  pill.innerHTML = `<span class="dot"></span>${STATUS_LABEL[doc.status]}`;
+  pill.innerHTML = `<span class="dot"></span>${STATUS_LABEL[doc.status] || doc.status || 'Pending'}`;
   $('queuemeta').textContent = QUEUE_MODE ? `${d.remaining} in queue` : '';
   $('vfoot').style.display = editable ? 'flex' : 'none';
+  // Footer differs for a monitor reviewing vs an expert validating
+  const reviewing = editable && doc.status === 'in_monitor_review';
+  $('btn-review').style.display = reviewing ? '' : 'none';
+  $('btn-approve').style.display = reviewing ? 'none' : '';
+  $('btn-skip').style.display = reviewing ? 'none' : '';
+  $('btn-flag').style.display = reviewing ? 'none' : '';
   $('pdfbar').textContent = doc.pdf_file ? `${doc.pdf_file} — original scan` : 'No scan file';
   if (doc.pdf_file) {
     $('pdfframe').style.display = ''; $('nopdf').style.display = 'none';
@@ -728,8 +761,27 @@ function renderDoc(d) {
     const b = document.createElement('div'); b.className = 'robanner';
     b.textContent = doc.status === 'flagged'
       ? `Read-only — flagged: ${doc.flag_reason || 'no reason given'}`
-      : 'Read-only — this document is already validated.';
+      : (doc.status === 'reviewed'
+         ? 'Read-only — this document has been monitored.'
+         : (doc.status === 'validated'
+            ? 'Read-only — this document is already validated.'
+            : 'Read-only view.'));
     pane.appendChild(b);
+    // Expert can re-open a deed THEY validated (still assigned to them);
+    // admin can always. Lets them fix an accidental approve or a late change.
+    const canUnvalidate = doc.status === 'validated' &&
+      (ROLE === 'admin' || (doc.validated_by === UID && doc.assigned_to === UID));
+    if (canUnvalidate) {
+      const btn = document.createElement('button');
+      btn.className = 'primary small';
+      btn.style.marginTop = '8px';
+      btn.textContent = 'Un-validate & edit';
+      btn.onclick = async () => {
+        try { renderDoc(await api(`/documents/${doc.id}/unvalidate`, { method: 'POST' })); }
+        catch (e) { alert(e.message); }
+      };
+      pane.appendChild(btn);
+    }
   }
   let sec = null, secEl = null;
   for (const f of d.fields) {
@@ -744,14 +796,24 @@ function renderDoc(d) {
     row.innerHTML = `<label for="f${f.id}">${f.label}</label>
       <${tag} id="f${f.id}" data-fid="${f.id}" ${editable ? '' : 'disabled'}></${tag}>
       <div class="ocr-orig" id="o${f.id}"></div>
+      <div class="odia-wrap">
+        <label style="margin-top:6px">${f.label} (Odia)
+          ${editable ? `<button type="button" class="kbd-btn" onclick="toggleOdiaKbd('f${f.id}_odia')">\u2328 keyboard</button>` : ''}
+        </label>
+        <input id="f${f.id}_odia" data-fid-odia="${f.id}" lang="or" ${editable ? '' : 'disabled'}>
+      </div>
       <div class="edited-by" id="eb${f.id}"></div>`;
     secEl.appendChild(row);
     const el = row.querySelector('[data-fid]');
     el.value = f.current_value;
     markChanged(el, f);
+    const odiaEl = row.querySelector('[data-fid-odia]');
+    odiaEl.value = f.odia_value || '';
     if (editable) {
       el.addEventListener('change', () => saveField(el, f));
       el.addEventListener('input', () => { $('savestate').textContent = 'Editing…'; });
+      odiaEl.addEventListener('change', () => saveField(el, f, odiaEl.value));
+      odiaEl.addEventListener('input', () => { $('savestate').textContent = 'Editing…'; });
     }
   }
   pane.scrollTop = 0;
@@ -766,12 +828,54 @@ function markChanged(el, f) {
   o.classList.toggle('show', changed);
 }
 
-async function saveField(el, f) {
+/* ---------- Odia virtual keyboard (1) + translate (2) ---------- */
+let ODIA_TARGET = null;
+const ODIA_KEYS = [
+  'ଅ','ଆ','ଇ','ଈ','ଉ','ଊ','ଋ','ଏ','ଐ','ଓ','ଔ',
+  'କ','ଖ','ଗ','ଘ','ଙ','ଚ','ଛ','ଜ','ଝ','ଞ',
+  'ଟ','ଠ','ଡ','ଢ','ଣ','ତ','ଥ','ଦ','ଧ','ନ',
+  'ପ','ଫ','ବ','ଭ','ମ','ଯ','ର','ଲ','ଳ','ଵ',
+  'ଶ','ଷ','ସ','ହ','କ୍ଷ','ଜ୍ଞ',
+  'ା','ି','ୀ','ୁ','ୂ','ୃ','େ','ୈ','ୋ','ୌ','୍','ଂ','ଃ','ଁ',
+  '୦','୧','୨','୩','୪','୫','୬','୭','୮','୯','଼','ଽ',' '
+];
+function toggleOdiaKbd(targetId) {
+  const kb = $('odia-kbd');
+  if (ODIA_TARGET === targetId && kb.style.display === 'block') {
+    kb.style.display = 'none'; ODIA_TARGET = null; return;
+  }
+  ODIA_TARGET = targetId;
+  if (!kb.dataset.built) {
+    kb.querySelector('#odia-keys').innerHTML = ODIA_KEYS.map(k =>
+      `<button type="button" onclick="odiaType('${k === ' ' ? ' ' : k}')">${k === ' ' ? 'space' : k}</button>`).join('');
+    kb.dataset.built = '1';
+  }
+  kb.style.display = 'block';
+}
+function odiaType(ch) {
+  if (!ODIA_TARGET) return;
+  const el = $(ODIA_TARGET); if (!el) return;
+  const s = el.selectionStart ?? el.value.length, e = el.selectionEnd ?? el.value.length;
+  el.value = el.value.slice(0, s) + ch + el.value.slice(e);
+  const pos = s + ch.length; el.setSelectionRange(pos, pos); el.focus();
+  el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change'));
+}
+function odiaBackspace() {
+  if (!ODIA_TARGET) return;
+  const el = $(ODIA_TARGET); if (!el) return;
+  el.value = el.value.slice(0, -1);
+  el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change'));
+  el.focus();
+}
+async function saveField(el, f, odiaVal) {
   dirty++; $('savestate').textContent = 'Saving…';
   try {
+    const body = { value: el.value };
+    if (odiaVal !== undefined) body.odia = odiaVal;
     await api(`/documents/${DOC.document.id}/fields/${f.id}`,
-      { method: 'PATCH', body: JSON.stringify({ value: el.value }) });
+      { method: 'PATCH', body: JSON.stringify(body) });
     f.current_value = el.value; markChanged(el, f);
+    if (odiaVal !== undefined) f.odia_value = odiaVal;
     const eb = $('eb' + f.id);
     if (eb) { eb.textContent = `edited by you · just now`; eb.classList.add('show'); }
     $('savestate').textContent = 'All changes saved';
@@ -783,20 +887,44 @@ async function flushPending() {
   while (dirty > 0) await new Promise(r => setTimeout(r, 60));
 }
 async function afterAction() {
-  if (QUEUE_MODE) startQueue();
-  else { showView('browse'); runSearch(PAGE); }
+  // Always advance to the next item rather than returning to the list.
+  if (REVIEW_MODE || ROLE === 'monitor') { startReviewQueue(); }
+  else { startQueue(); }
 }
 async function doApprove() { await flushPending(); await api(`/documents/${DOC.document.id}/approve`, { method: 'POST' }); afterAction(); }
 async function doSkip() { await flushPending(); await api(`/documents/${DOC.document.id}/skip`, { method: 'POST' }); afterAction(); }
-async function doFlag() {
-  const reason = prompt('Why is this document being flagged? (e.g. illegible scan, wrong file)');
-  if (reason === null) return;
+async function doReview() {
+  await flushPending();
+  const r = await api(`/documents/${DOC.document.id}/review`, { method: 'POST' });
+  afterAction();
+}
+function doFlag() {
+  // in-UI modal, not a browser prompt
+  $('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+    <div class="modal" style="width:min(460px,92vw)">
+      <h2>Flag document</h2>
+      <label for="flag-reason">Why is this document being flagged?</label>
+      <textarea id="flag-reason" style="width:100%;min-height:90px"
+        placeholder="e.g. illegible scan, wrong file, pages missing"></textarea>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button onclick="closeModal()">Cancel</button>
+        <button class="danger" onclick="confirmFlag()">Flag document</button>
+      </div>
+    </div></div>`;
+  setTimeout(() => { const t = $('flag-reason'); if (t) t.focus(); }, 30);
+}
+async function confirmFlag() {
+  const reason = ($('flag-reason') && $('flag-reason').value || '').trim();
+  closeModal();
   await flushPending();
   await api(`/documents/${DOC.document.id}/flag`, { method: 'POST', body: JSON.stringify({ reason }) });
   afterAction();
 }
 function backToBrowse() {
-  if (DOC && DOC.editable) doSkip(); else { showView('browse'); runSearch(PAGE); }
+  // Going back must NOT change document state — no skip, no status change.
+  // State changes only on an explicit button (Skip / Flag / Approve / Review).
+  if (ROLE === 'monitor') showView('monitor');
+  else { showView('browse'); runSearch(PAGE); }
 }
 document.addEventListener('keydown', e => {
   if (e.ctrlKey && e.key === 'Enter' && DOC && $('validate').style.display === 'flex' && DOC.editable) {
@@ -822,6 +950,45 @@ document.addEventListener('keydown', e => {
 })();
 
 /* ---------- admin: dashboard ---------- */
+async function loadMonitor() {
+  const [d, queue] = await Promise.all([api('/monitor/dashboard'), api('/monitor/queue')]);
+  const cards = `<div class="cards">
+      <div class="card"><div class="num">${d.awaiting}</div><div class="lbl">Awaiting review</div></div>
+      <div class="card"><div class="num">${d.reviewed}</div><div class="lbl">Monitored</div></div>
+      <div class="card"><div class="num">${d.corrected}</div><div class="lbl">Corrected on review</div></div>
+      <div class="card"><div class="num">${d.correction_rate}%</div><div class="lbl">Correction rate</div></div>
+      <div class="card"><div class="num">${d.reviewed_today}</div><div class="lbl">Monitored today</div></div>
+    </div>`;
+  const queueRows = queue.map(q => {
+    const who = q.sent_reason === 'skip'
+      ? `Skipped by ${q.sent_by_name || '—'}`
+      : (q.sent_reason === 'sample'
+         ? `Sample (validated by ${q.validated_by_name || q.sent_by_name || '—'})`
+         : (q.validated_by_name || q.sent_by_name || '—'));
+    return `<tr style="cursor:pointer" onclick="openDoc(${q.id})">
+      <td class="mono">${q.deed_number}</td><td>${q.deed_type || '—'}</td><td>${q.year || '—'}</td>
+      <td>${who}</td><td>${q.sent_to_review_on || '—'}</td>
+      <td><button class="primary small" onclick="event.stopPropagation();openDoc(${q.id})">Review</button></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" style="color:var(--muted)">Nothing awaiting review.</td></tr>';
+  const expertRows = d.experts.map(e => `<tr>
+      <td>${e.expert}</td><td>${e.reviewed}</td><td>${e.corrected}</td>
+      <td>${e.error_rate}%</td><td>${e.awaiting}</td></tr>`).join('')
+    || '<tr><td colspan="5" style="color:var(--muted)">No records monitored yet.</td></tr>';
+  $('monitor').innerHTML = `
+    <h1>Review dashboard</h1>
+    <p style="color:var(--muted);font-size:0.9rem;margin-top:-8px">
+      A ~1% sample of each day's validated deeds (plus any an expert skipped) comes here for review.
+      Open one to check it; save any corrections, then mark it Reviewed.</p>
+    ${cards}
+    <h2>Awaiting review</h2>
+    <table class="stats"><thead><tr><th>Deed</th><th>Type</th><th>Year</th>
+      <th>Sent by</th><th>Sent on</th><th></th></tr></thead><tbody>${queueRows}</tbody></table>
+    <h2>By expert</h2>
+    <table class="stats"><thead><tr><th>Expert</th><th>Monitored</th><th>Corrected</th>
+      <th>Error rate</th><th>Still awaiting</th></tr></thead><tbody>${expertRows}</tbody></table>`;
+}
+
 async function loadProgress() {
   const s = await api('/admin/dashboard');
   const v = k => s.by_status[k] || 0;
@@ -835,7 +1002,7 @@ async function loadProgress() {
       <div class="card"><div class="num">${s.total_edits}</div><div class="lbl">Corrections made</div></div>
     </div>
     <div class="pbar"><div style="width:${pct}%"></div></div>
-    <p style="color:var(--muted);font-size:12.5px">${pct}% validated · ${s.unassigned_pending} unassigned</p>`;
+    <p style="color:var(--muted);font-size: 0.8333rem">${pct}% validated · ${s.unassigned_pending} unassigned</p>`;
   const expertRows = s.experts.map(e => `<tr>
       <td>${e.full_name}</td><td>${e.assigned_remaining} / ${e.assigned_total}</td>
       <td>${e.validated}</td><td>${e.validated_today}</td><td>${e.validated_7d}</td>
@@ -904,7 +1071,7 @@ async function loadUsers() {
   $('userrows').innerHTML = users.map(u => {
     const del = u.id !== UID
       ? `<button class="small danger" onclick="deleteUser(${u.id}, '${u.username}')">Delete</button>`
-      : '<span style="color:var(--muted);font-size:12px">you</span>';
+      : '<span style="color:var(--muted);font-size: 0.8rem">you</span>';
     return `<tr><td class="mono">${u.username}</td><td>${u.full_name}</td>
       <td>${u.role}</td><td>${u.validated}</td><td>${del}</td></tr>`;
   }).join('');
@@ -927,6 +1094,22 @@ async function createUser() {
 
 /* ---------- boot ---------- */
 if (TOKEN) enterApp(); else $('login').style.display = 'flex';
+
+// Google Translate whole-page widget: adds a language picker that translates
+// the entire page in place (Odia and any other language).
+function googleTranslateElementInit() {
+  new google.translate.TranslateElement(
+    { pageLanguage: 'en', includedLanguages: 'or',
+      layout: google.translate.TranslateElement.InlineLayout.SIMPLE,
+      autoDisplay: false },
+    'google_translate_element');
+}
+(function loadGT() {
+  const s = document.createElement('script');
+  s.src = 'https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit';
+  document.body.appendChild(s);
+})();
+
 </script>
 </body>
 </html>

@@ -177,6 +177,12 @@ def require_admin(user=Depends(current_user)):
     return user
 
 
+def require_monitor(user=Depends(current_user)):
+    if user["role"] not in ("monitor", "admin"):
+        raise HTTPException(403, "Monitor access required")
+    return user
+
+
 @app.post("/api/admin/reingest")
 def admin_reingest(user=Depends(require_admin)):
     """Manually (re)run ingestion. Safe: existing deeds are skipped."""
@@ -260,14 +266,14 @@ def doc_payload(con, doc_id):
     if not doc:
         raise HTTPException(404, "Document not found")
     fields = con.execute(
-        "SELECT id, section, label, ocr_value, current_value, multiline "
+        "SELECT id, section, label, ocr_value, current_value, odia_value, multiline "
         "FROM fields WHERE document_id = %s ORDER BY position", (doc_id,)).fetchall()
     remaining = con.execute(
         "SELECT COUNT(*) c FROM documents WHERE status IN ('pending','in_review')"
     ).fetchone()["c"]
     doc = dict(doc)
-    for k in ("locked_at", "validated_at"):
-        doc[k] = str(doc[k]) if doc[k] else None
+    for k in ("locked_at", "validated_at", "reviewed_at"):
+        doc[k] = str(doc[k]) if doc.get(k) else None
     return {"document": doc, "fields": [dict(f) for f in fields], "remaining": remaining}
 
 
@@ -292,6 +298,15 @@ def queue_next(user=Depends(current_user)):
     return out
 
 
+@app.get("/api/documents/{doc_id}/view")
+def view_doc(doc_id: int, user=Depends(current_user)):
+    """Read-only fetch — does not claim or lock the document."""
+    with connect() as con:
+        out = doc_payload(con, doc_id)
+    out["editable"] = False
+    return out
+
+
 @app.post("/api/documents/{doc_id}/claim")
 def claim(doc_id: int, user=Depends(current_user)):
     with connect() as con:
@@ -304,8 +319,16 @@ def claim(doc_id: int, user=Depends(current_user)):
         if not doc:
             raise HTTPException(404, "Document not found")
         editable = False
-        if doc["status"] in ("validated", "flagged"):
+        if doc["status"] in ("validated", "flagged", "reviewed"):
             pass  # read-only
+        elif doc["status"] == "in_monitor_review":
+            if user["role"] in ("monitor", "admin"):
+                con.execute(
+                    "UPDATE documents SET locked_by=%s, locked_at=now() WHERE id=%s",
+                    (user["id"], doc_id))
+                editable = True
+            else:
+                raise HTTPException(409, "This deed is under monitor review")
         elif doc["status"] == "in_review" and doc["locked_by"] == user["id"]:
             editable = True
         elif doc["status"] == "in_review" and not con.execute(
@@ -317,9 +340,13 @@ def claim(doc_id: int, user=Depends(current_user)):
               and user["role"] != "admin"):
             raise HTTPException(409, f"Assigned to {doc['assigned_name']}")
         else:  # pending, or expired lock
+            # Take the lock but DO NOT change the status yet. Status only moves
+            # to in_review when the user actually edits a field, and to
+            # validated/flagged/reviewed on an explicit button. This means
+            # simply opening then going back leaves the deed untouched.
             con.execute(
-                "UPDATE documents SET status='in_review', locked_by=%s, locked_at=now() "
-                "WHERE id=%s", (user["id"], doc_id))
+                "UPDATE documents SET locked_by=%s, locked_at=now() WHERE id=%s",
+                (user["id"], doc_id))
             editable = True
         con.commit()
         out = doc_payload(con, doc_id)
@@ -346,67 +373,12 @@ def get_pdf(doc_id: int, user=Depends(current_user)):
     return FileResponse(path, media_type="application/pdf")
 
 
-# ---------- full-text digitization (Sarvam Document Intelligence) ----------
-
-import os
-SARVAM_API_KEY = os.environ.get("SARVAM_API_KEY", "")
-DIGITIZE_LANG = os.environ.get("DIGITIZE_LANG", "or-IN")  # Odia (live API uses or-IN)
-
-
-def _run_digitization(doc_id: int, pdf_path: str):
-    """Background: call Sarvam Document Intelligence on the PDF, store the text."""
-    try:
-        if not SARVAM_API_KEY:
-            with connect() as con:
-                con.execute("UPDATE documents SET digitized_status='error', digitized_text=%s "
-                            "WHERE id=%s",
-                            ("Digitization is not configured on this server "
-                             "(SARVAM_API_KEY not set). Ask an admin to enable it.", doc_id))
-                con.commit()
-            return
-        from sarvamai import SarvamAI
-        client = SarvamAI(api_subscription_key=SARVAM_API_KEY)
-        job = client.document_intelligence.create_job(language=DIGITIZE_LANG, output_format="md")
-        job.upload_file(pdf_path)
-        job.start()
-        job.wait_until_complete()
-        import tempfile, zipfile, glob
-        with tempfile.TemporaryDirectory() as td:
-            out = os.path.join(td, "out.zip")
-            job.download_output(out)
-            with zipfile.ZipFile(out) as z:
-                z.extractall(td)
-            text = ""
-            for m in sorted(glob.glob(os.path.join(td, "**", "*.md"), recursive=True)):
-                text += open(m, encoding="utf-8").read() + "\n\n"
-        with connect() as con:
-            con.execute("UPDATE documents SET digitized_text=%s, digitized_status='ready' "
-                        "WHERE id=%s", (text.strip(), doc_id))
-            con.commit()
-    except Exception as e:
-        with connect() as con:
-            con.execute("UPDATE documents SET digitized_status='error', digitized_text=%s "
-                        "WHERE id=%s", (f"Digitization failed: {e}", doc_id))
-            con.commit()
-
-
-@app.post("/api/documents/{doc_id}/digitize")
-def digitize(doc_id: int, user=Depends(current_user)):
-    with connect() as con:
-        doc = con.execute("SELECT pdf_file, digitized_status FROM documents WHERE id=%s",
-                          (doc_id,)).fetchone()
-        if not doc:
-            raise HTTPException(404, "Document not found")
-        if not doc["pdf_file"]:
-            raise HTTPException(400, "No scan attached to digitize")
-        if doc["digitized_status"] == "processing":
-            return {"ok": True, "status": "processing"}
-        con.execute("UPDATE documents SET digitized_status='processing' WHERE id=%s", (doc_id,))
-        con.commit()
-    import threading
-    pdf_path = str(Path("static/scans") / doc["pdf_file"])
-    threading.Thread(target=_run_digitization, args=(doc_id, pdf_path), daemon=True).start()
-    return {"ok": True, "status": "processing"}
+# ---------- full text (populated from Akshar's JSON on ingest; edited here) ----------
+# NOTE: digitization itself is done in Akshar, not here. The portal only
+# stores the extracted full text and lets an expert correct it. When the
+# Akshar JSON format is finalised, the ingest step will populate
+# documents.digitized_text (and the structured metadata fields); this API
+# just serves and saves that text.
 
 
 @app.get("/api/documents/{doc_id}/digitized")
@@ -432,7 +404,7 @@ def save_digitized(doc_id: int, body: DigitizedText, user=Depends(current_user))
                     "last_edited_by=%s, last_edited_at=now() WHERE id=%s",
                     (body.text, user["id"], doc_id))
         con.execute("INSERT INTO edit_log (document_id, action, user_id) "
-                    "VALUES (%s,'digitize_edit',%s)", (doc_id, user["id"]))
+                    "VALUES (%s,'fulltext_edit',%s)", (doc_id, user["id"]))
         con.commit()
     return {"ok": True}
 
@@ -462,9 +434,15 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
             where.append("d.book_no = %s"); params.append(int(q))
     if status:
         where.append("d.status = %s"); params.append(status)
-    # Experts only ever see deeds assigned to them; admins see everything.
-    if user["role"] != "admin":
+    # Role-scoped visibility:
+    #  - experts see only deeds assigned to them
+    #  - monitors see the review pool + anything they've reviewed
+    #  - admins see everything
+    if user["role"] == "expert":
         where.append("d.assigned_to = %s"); params.append(user["id"])
+    elif user["role"] == "monitor":
+        where.append("(d.status IN ('in_monitor_review','reviewed') OR d.review_by = %s)")
+        params.append(user["id"])
     wsql = ("WHERE " + " AND ".join(where)) if where else ""
     order_col = {"year": "d.year", "deed_number": "d.deed_number",
                  "status": "d.status", "book_no": "d.book_no",
@@ -495,6 +473,7 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
 
 class FieldPatch(BaseModel):
     value: str
+    odia: str | None = None
 
 
 def require_lock(con, doc_id, user):
@@ -502,7 +481,14 @@ def require_lock(con, doc_id, user):
                       (doc_id,)).fetchone()
     if not doc:
         raise HTTPException(404, "Document not found")
-    if doc["status"] != "in_review" or doc["locked_by"] != user["id"]:
+    # The user must hold the lock. Editable statuses are pending / in_review
+    # (expert) and in_monitor_review (monitor/admin). Opening a deed takes the
+    # lock but leaves status pending; the first edit promotes it to in_review.
+    holds = doc["locked_by"] == user["id"]
+    ok = holds and (
+        doc["status"] in ("pending", "in_review") or
+        (doc["status"] == "in_monitor_review" and user["role"] in ("monitor", "admin")))
+    if not ok:
         raise HTTPException(409, "Document is not checked out to you — open it first")
     return doc
 
@@ -515,6 +501,7 @@ def patch_field(doc_id: int, field_id: int, body: FieldPatch, user=Depends(curre
                         (field_id, doc_id)).fetchone()
         if not f:
             raise HTTPException(404, "Field not found")
+        changed = False
         if f["current_value"] != body.value:
             con.execute("UPDATE fields SET current_value = %s WHERE id = %s",
                         (body.value, field_id))
@@ -522,8 +509,20 @@ def patch_field(doc_id: int, field_id: int, body: FieldPatch, user=Depends(curre
                 "INSERT INTO edit_log (document_id, field_id, old_value, new_value, action, user_id) "
                 "VALUES (%s,%s,%s,%s,'edit',%s)",
                 (doc_id, field_id, f["current_value"], body.value, user["id"]))
+            changed = True
+        if body.odia is not None and f["odia_value"] != body.odia:
+            con.execute("UPDATE fields SET odia_value = %s WHERE id = %s",
+                        (body.odia, field_id))
             con.execute(
-                "UPDATE documents SET locked_at = now(), "
+                "INSERT INTO edit_log (document_id, field_id, old_value, new_value, action, user_id) "
+                "VALUES (%s,%s,%s,%s,'edit_odia',%s)",
+                (doc_id, field_id, f["odia_value"], body.odia, user["id"]))
+            changed = True
+        if changed:
+            # first edit on a still-pending deed promotes it to in_review
+            con.execute(
+                "UPDATE documents SET status = CASE WHEN status='pending' THEN 'in_review' "
+                "ELSE status END, locked_at = now(), "
                 "last_edited_by = %s, last_edited_at = now() WHERE id = %s",
                 (user["id"], doc_id))
         con.commit()
@@ -558,6 +557,21 @@ def approve(doc_id: int, user=Depends(current_user)):
             "locked_by=NULL, locked_at=NULL WHERE id=%s", (user["id"], doc_id))
         con.execute("INSERT INTO edit_log (document_id, action, user_id) "
                     "VALUES (%s,'approve',%s)", (doc_id, user["id"]))
+        # Sample ~1% of each day's validated records for monitor review.
+        # Deterministic boundary test: when today's validated count crosses a
+        # new multiple of 100, route THIS deed to the monitor review pool.
+        today_count = con.execute(
+            "SELECT COUNT(*) c FROM documents "
+            "WHERE status IN ('validated','reviewed','in_monitor_review') "
+            "AND validated_at::date = now()::date").fetchone()["c"]
+        # 1st, 101st, 201st ... validated deed of the day gets sampled (>=1%)
+        if today_count % 100 == 1:
+            con.execute(
+                "UPDATE documents SET status='in_monitor_review', "
+                "sent_to_review_on=now()::date, sent_to_review_by=%s, sent_reason='sample' "
+                "WHERE id=%s", (user["id"], doc_id))
+            con.execute("INSERT INTO edit_log (document_id, action, user_id) "
+                        "VALUES (%s,'sent_to_review',%s)", (doc_id, user["id"]))
         con.commit()
     return {"ok": True}
 
@@ -583,10 +597,107 @@ def flag(doc_id: int, body: FlagIn, user=Depends(current_user)):
 def skip(doc_id: int, user=Depends(current_user)):
     with connect() as con:
         require_lock(con, doc_id, user)
-        con.execute("UPDATE documents SET status='pending', locked_by=NULL, "
-                    "locked_at=NULL WHERE id=%s", (doc_id,))
+        if user["role"] == "expert":
+            # An expert skipping a deed (can't complete it) sends it to the
+            # monitor review pool rather than back to the general queue.
+            con.execute(
+                "UPDATE documents SET status='in_monitor_review', locked_by=NULL, "
+                "locked_at=NULL, sent_to_review_on=now()::date, sent_to_review_by=%s, "
+                "sent_reason='skip' WHERE id=%s", (user["id"], doc_id))
+            con.execute("INSERT INTO edit_log (document_id, action, user_id) "
+                        "VALUES (%s,'skip_to_monitor',%s)", (doc_id, user["id"]))
+        else:
+            con.execute("UPDATE documents SET status='pending', locked_by=NULL, "
+                        "locked_at=NULL WHERE id=%s", (doc_id,))
         con.commit()
     return {"ok": True}
+
+
+@app.get("/api/monitor/queue")
+def monitor_queue(user=Depends(require_monitor)):
+    """Deeds waiting for monitor review (sampled 1% + expert skips)."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT d.id, d.deed_number, d.deed_type, d.year, "
+            "vu.full_name validated_by_name, su.full_name sent_by_name, "
+            "d.sent_reason, d.sent_to_review_on, d.status "
+            "FROM documents d "
+            "LEFT JOIN users vu ON vu.id = d.validated_by "
+            "LEFT JOIN users su ON su.id = d.sent_to_review_by "
+            "WHERE d.status = 'in_monitor_review' ORDER BY d.sent_to_review_on, d.id").fetchall()
+    return [dict(r, sent_to_review_on=str(r["sent_to_review_on"]) if r["sent_to_review_on"] else None)
+            for r in rows]
+
+
+@app.get("/api/monitor/next")
+def monitor_next(user=Depends(require_monitor)):
+    """Claim the next deed awaiting monitor review and return it editable."""
+    with connect() as con:
+        row = con.execute(
+            "UPDATE documents SET locked_by=%s, locked_at=now() "
+            "WHERE id = (SELECT id FROM documents WHERE status='in_monitor_review' "
+            "  ORDER BY sent_to_review_on, id LIMIT 1 FOR UPDATE SKIP LOCKED) "
+            "RETURNING id", (user["id"],)).fetchone()
+        if not row:
+            con.commit()
+            return {"document": None, "remaining": 0}
+        remaining = con.execute(
+            "SELECT COUNT(*) c FROM documents WHERE status='in_monitor_review'").fetchone()["c"]
+        con.commit()
+        out = doc_payload(con, row["id"])
+    out["editable"] = True
+    out["remaining"] = remaining
+    return out
+
+
+@app.post("/api/documents/{doc_id}/unvalidate")
+def unvalidate(doc_id: int, user=Depends(current_user)):
+    """An expert can un-validate a deed THEY validated (and that's still
+    assigned to them) to edit it again — e.g. accidental click or a late fix.
+    Returns it to in_review, locked to them."""
+    with connect() as con:
+        doc = con.execute("SELECT status, validated_by, assigned_to FROM documents "
+                          "WHERE id=%s FOR UPDATE", (doc_id,)).fetchone()
+        if not doc:
+            raise HTTPException(404, "Document not found")
+        if doc["status"] != "validated":
+            raise HTTPException(400, "Only a validated deed can be un-validated")
+        # expert may only reopen their own validation, still assigned to them;
+        # admins can always
+        if user["role"] != "admin":
+            if doc["validated_by"] != user["id"] or doc["assigned_to"] != user["id"]:
+                raise HTTPException(403, "You can only re-open deeds you validated")
+        con.execute(
+            "UPDATE documents SET status='in_review', validated_by=NULL, validated_at=NULL, "
+            "locked_by=%s, locked_at=now() WHERE id=%s", (user["id"], doc_id))
+        con.execute("INSERT INTO edit_log (document_id, action, user_id) "
+                    "VALUES (%s,'unvalidate',%s)", (doc_id, user["id"]))
+        con.commit()
+        out = doc_payload(con, doc_id)
+    out["editable"] = True
+    return out
+
+
+@app.post("/api/documents/{doc_id}/review")
+def submit_review(doc_id: int, user=Depends(require_monitor)):
+    """Monitor marks a deed reviewed. review_corrected reflects whether the
+    monitor changed any field during this review (tracked via edit_log)."""
+    with connect() as con:
+        doc = con.execute("SELECT status FROM documents WHERE id=%s", (doc_id,)).fetchone()
+        if not doc or doc["status"] not in ("in_monitor_review", "validated"):
+            raise HTTPException(400, "This deed is not awaiting review")
+        # did the monitor correct anything during review?
+        corrected = con.execute(
+            "SELECT COUNT(*) c FROM edit_log WHERE document_id=%s AND user_id=%s "
+            "AND action='edit'", (doc_id, user["id"])).fetchone()["c"] > 0
+        con.execute(
+            "UPDATE documents SET status='reviewed', review_by=%s, reviewed_at=now(), "
+            "review_corrected=%s, locked_by=NULL, locked_at=NULL WHERE id=%s",
+            (user["id"], corrected, doc_id))
+        con.execute("INSERT INTO edit_log (document_id, action, user_id) "
+                    "VALUES (%s,'reviewed',%s)", (doc_id, user["id"]))
+        con.commit()
+    return {"ok": True, "corrected": corrected}
 
 
 # ---------- admin ----------
@@ -684,6 +795,40 @@ def unassign_work(body: UnassignIn, user=Depends(require_admin)):
     return {"unassigned": len(rows)}
 
 
+@app.get("/api/monitor/dashboard")
+def monitor_dashboard(user=Depends(require_monitor)):
+    """Analysis for the monitor: pending review count, reviewed totals,
+    correction rate, and a per-expert breakdown of what was reviewed."""
+    with connect() as con:
+        awaiting = con.execute(
+            "SELECT COUNT(*) c FROM documents WHERE status='in_monitor_review'").fetchone()["c"]
+        reviewed = con.execute(
+            "SELECT COUNT(*) c FROM documents WHERE status='reviewed'").fetchone()["c"]
+        corrected = con.execute(
+            "SELECT COUNT(*) c FROM documents WHERE status='reviewed' AND review_corrected").fetchone()["c"]
+        today = con.execute(
+            "SELECT COUNT(*) c FROM documents WHERE status='reviewed' "
+            "AND reviewed_at::date = now()::date").fetchone()["c"]
+        # per-expert: of this expert's validated deeds that reached review,
+        # how many the monitor corrected
+        per_expert = con.execute(
+            "SELECT vu.full_name expert, "
+            "COUNT(*) FILTER (WHERE d.status='reviewed') reviewed, "
+            "COUNT(*) FILTER (WHERE d.status='reviewed' AND d.review_corrected) corrected, "
+            "COUNT(*) FILTER (WHERE d.status='in_monitor_review') awaiting "
+            "FROM documents d JOIN users vu ON vu.id = d.validated_by "
+            "WHERE d.status IN ('in_monitor_review','reviewed') "
+            "GROUP BY vu.full_name ORDER BY reviewed DESC").fetchall()
+    corr_rate = round(corrected / reviewed * 100, 1) if reviewed else 0.0
+    out_experts = []
+    for e in per_expert:
+        e = dict(e)
+        e["error_rate"] = round(e["corrected"] / e["reviewed"] * 100, 1) if e["reviewed"] else 0.0
+        out_experts.append(e)
+    return {"awaiting": awaiting, "reviewed": reviewed, "corrected": corrected,
+            "correction_rate": corr_rate, "reviewed_today": today, "experts": out_experts}
+
+
 @app.get("/api/admin/dashboard")
 def admin_dashboard(user=Depends(require_admin)):
     with connect() as con:
@@ -753,7 +898,7 @@ def list_users(user=Depends(require_admin)):
 
 @app.post("/api/users")
 def create_user(body: NewUser, user=Depends(require_admin)):
-    if body.role not in ("expert", "admin"):
+    if body.role not in ("expert", "admin", "monitor"):
         raise HTTPException(400, "Role must be expert or admin")
     if len(body.password) < 6:
         raise HTTPException(400, "Password must be at least 6 characters")

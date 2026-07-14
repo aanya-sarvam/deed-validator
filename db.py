@@ -83,12 +83,32 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_edited_at TIMESTAMPTZ;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS digitized_text TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS digitized_status TEXT NOT NULL DEFAULT 'not_started';
 -- digitized_status: not_started | processing | ready | corrected | error
+
+-- three-role support (admin / monitor / expert) and a review stage
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('expert','admin','monitor'));
+
+-- 'reviewed' is a post-validation state set by a monitor; 'assigned_to' a
+-- validated doc that a monitor picked up is tracked via review_by
+ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_status_check;
+ALTER TABLE documents ADD CONSTRAINT documents_status_check
+    CHECK (status IN ('pending','in_review','validated','flagged','reviewed','in_monitor_review'));
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS review_by BIGINT REFERENCES users(id);
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS review_corrected BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS sent_to_review_on DATE;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS sent_to_review_by BIGINT REFERENCES users(id);
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS sent_reason TEXT;  -- 'skip' | 'sample'
+
+-- Odia value per field, alongside the (English) current_value
+ALTER TABLE fields ADD COLUMN IF NOT EXISTS odia_value TEXT NOT NULL DEFAULT '';
 """
 
 SEED_USERS = [
     ("expert1", "Aparna Mishra", "expert"),
     ("expert2", "Debasis Rout", "expert"),
     ("expert3", "Sunita Pradhan", "expert"),
+    ("monitor", "Priya Sahoo", "monitor"),
     ("admin", "R. K. Mohapatra", "admin"),
 ]
 DEMO_PASSWORD = "sarvam123"  # seed only — admin should rotate these on first login
@@ -116,12 +136,15 @@ def init_db():
         # race-safe in Postgres when several processes boot simultaneously.
         con.execute("SELECT pg_advisory_lock(424241)")
         con.execute(SCHEMA)
-        if not con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
-            with con.cursor() as cur:
-                cur.executemany(
+        # Insert any seed users that don't already exist (idempotent). This
+        # backfills new seed accounts (e.g. the monitor) on existing databases
+        # without disturbing real accounts.
+        with con.cursor() as cur:
+            for u, n, r in SEED_USERS:
+                cur.execute(
                     "INSERT INTO users (username, password_hash, full_name, role) "
-                    "VALUES (%s,%s,%s,%s)",
-                    [(u, hash_pw(DEMO_PASSWORD), n, r) for u, n, r in SEED_USERS])
+                    "VALUES (%s,%s,%s,%s) ON CONFLICT (username) DO NOTHING",
+                    (u, hash_pw(DEMO_PASSWORD), n, r))
         con.commit()
     finally:
         con.close()  # releases the advisory lock
