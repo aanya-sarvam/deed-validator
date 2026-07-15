@@ -417,7 +417,7 @@ PARTY_NAME_SQL = ("(SELECT string_agg(current_value, E'\\n' ORDER BY position) F
 
 @app.get("/api/search")
 def search(q: str = "", field: str = "deed_number", status: str = "",
-           sort_by: str = "year", sort_order: str = "asc",
+           sort_by: str = "", sort_order: str = "asc",
            page: int = 1, per_page: int = 10, user=Depends(current_user)):
     where, params = [], []
     q = q.strip()
@@ -440,6 +440,8 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
     #  - admins see everything
     if user["role"] == "expert":
         where.append("d.assigned_to = %s"); params.append(user["id"])
+        # Experts never see deeds that have gone to the monitor.
+        where.append("d.status NOT IN ('in_monitor_review','reviewed')")
     elif user["role"] == "monitor":
         where.append("(d.status IN ('in_monitor_review','reviewed') OR d.review_by = %s)")
         params.append(user["id"])
@@ -448,6 +450,14 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
                  "status": "d.status", "book_no": "d.book_no",
                  "last_edited": "d.last_edited_at"}.get(sort_by, "d.id")
     order = "DESC" if sort_order == "desc" else "ASC"
+    # Experts get a fixed priority sort by default (what to work on first):
+    # in_review (mid-way) -> pending -> flagged -> validated.
+    expert_priority = (user["role"] == "expert" and sort_by in ("", "id", None))
+    if expert_priority:
+        order_sql = ("CASE d.status WHEN 'in_review' THEN 0 WHEN 'pending' THEN 1 "
+                     "WHEN 'flagged' THEN 2 WHEN 'validated' THEN 3 ELSE 4 END, d.year, d.id")
+    else:
+        order_sql = f"{order_col} {order}, d.id"
     per_page = max(1, min(per_page, 100))
     offset = (max(page, 1) - 1) * per_page
 
@@ -463,7 +473,7 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
             f"FROM documents d LEFT JOIN users u ON u.id = d.locked_by "
             f"LEFT JOIN users a ON a.id = d.assigned_to "
             f"LEFT JOIN users le ON le.id = d.last_edited_by "
-            f"{wsql} ORDER BY {order_col} {order}, d.id LIMIT %s OFFSET %s",
+            f"{wsql} ORDER BY {order_sql} LIMIT %s OFFSET %s",
             ["First party%", "Second party%"] + params + [per_page, offset]).fetchall()
     return {"total": total, "page": page, "per_page": per_page,
             "results": [dict(r) for r in rows]}

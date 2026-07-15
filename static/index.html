@@ -282,14 +282,14 @@
   <div id="browse" class="view">
     <h1>Records</h1>
     <div class="toolbar">
-      <div class="grp">Status
+      <div class="grp" id="status-grp-top">Status
         <select id="f_status" onchange="runSearch(1)">
           <option value="">All</option>
           <option value="pending">Pending</option>
           <option value="in_review">In review</option>
           <option value="validated">Validated</option>
-          <option value="in_monitor_review">In monitor review</option>
-          <option value="reviewed">Monitored</option>
+          <option value="in_monitor_review" class="mon-only">In monitor review</option>
+          <option value="reviewed" class="mon-only">Monitored</option>
           <option value="flagged">Flagged</option>
         </select>
       </div>
@@ -306,6 +306,20 @@
       <thead><tr id="rec-head"></tr></thead>
       <tbody id="rows"></tbody>
     </table>
+    <div id="status-filter-bottom" style="display:none; margin-top:14px; text-align:center">
+      <button class="small" id="filter-toggle" onclick="toggleBottomFilter()"
+        style="color:var(--muted)">Show other records ▾</button>
+      <div id="bottom-filter-opts" style="display:none; margin-top:8px">
+        <span style="color:var(--muted); font-size:0.85rem; margin-right:6px">Show:</span>
+        <select id="f_status_expert" onchange="$('f_status').value=this.value; runSearch(1)">
+          <option value="">All my records</option>
+          <option value="pending">Pending</option>
+          <option value="in_review">In review</option>
+          <option value="validated">Validated</option>
+          <option value="flagged">Flagged</option>
+        </select>
+      </div>
+    </div>
     <div class="pager">
       <button class="small" id="prevbtn" onclick="runSearch(PAGE-1)">Previous</button>
       <span class="info" id="pageinfo"></span>
@@ -323,6 +337,7 @@
         <button id="tab-meta" class="tasktab active" onclick="showTask('meta')">Metadata</button>
         <button id="tab-text" class="tasktab" onclick="showTask('text')">Full text</button>
       </span>
+      <button class="small" onclick="toggleOdiaKbd()" title="Show/hide the Oriya virtual keyboard">⌨ Oriya keyboard</button>
       <span class="spacer" style="flex:1"></span>
       <span class="meta" id="queuemeta"></span>
     </div>
@@ -406,9 +421,10 @@
 
 <div id="odia-kbd" style="display:none">
   <div class="kbd-head">
-    <span>Odia keyboard</span>
+    <span>Oriya keyboard</span>
+    <span id="kbd-hint" style="display:none; color:var(--warn); font-size:0.78rem">Click a field first, then type</span>
     <span class="spacer" style="flex:1"></span>
-    <button type="button" onclick="odiaBackspace()">⌫ back</button>
+    <button type="button" onmousedown="event.preventDefault();odiaBackspace()">⌫ back</button>
     <button type="button" onclick="document.getElementById('odia-kbd').style.display='none'">✕ close</button>
   </div>
   <div id="odia-keys" class="kbd-keys"></div>
@@ -514,6 +530,15 @@ function enterApp() {
   if (ROLE === 'monitor') {
     $('nav-monitor').style.display = '';
     const qb = $('queue-btn'); if (qb) qb.textContent = 'Review next';
+  }
+  if (ROLE === 'expert') {
+    // simpler status list: experts never deal with monitored deeds
+    document.querySelectorAll('#f_status .mon-only').forEach(o => o.remove());
+    // hide the prominent top status filter; offer a small one at the bottom
+    $('status-grp-top').style.display = 'none';
+    $('status-filter-bottom').style.display = 'block';
+    // default view: All (their records), priority sort brings in-progress to top
+    const fs = $('f_status'); if (fs) fs.value = '';
   }
   showView('browse');
   runSearch(1);
@@ -797,9 +822,7 @@ function renderDoc(d) {
       <${tag} id="f${f.id}" data-fid="${f.id}" ${editable ? '' : 'disabled'}></${tag}>
       <div class="ocr-orig" id="o${f.id}"></div>
       <div class="odia-wrap">
-        <label style="margin-top:6px">${f.label} (Odia)
-          ${editable ? `<button type="button" class="kbd-btn" onclick="toggleOdiaKbd('f${f.id}_odia')">\u2328 keyboard</button>` : ''}
-        </label>
+        <label style="margin-top:6px">${f.label} (Odia)</label>
         <input id="f${f.id}_odia" data-fid-odia="${f.id}" lang="or" ${editable ? '' : 'disabled'}>
       </div>
       <div class="edited-by" id="eb${f.id}"></div>`;
@@ -810,6 +833,9 @@ function renderDoc(d) {
     const odiaEl = row.querySelector('[data-fid-odia]');
     odiaEl.value = f.odia_value || '';
     if (editable) {
+      // any field the user focuses becomes the keyboard's target
+      el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
+      odiaEl.addEventListener('focus', () => { ODIA_TARGET = odiaEl.id; hideKbdHint(); });
       el.addEventListener('change', () => saveField(el, f));
       el.addEventListener('input', () => { $('savestate').textContent = 'Editing…'; });
       odiaEl.addEventListener('change', () => saveField(el, f, odiaEl.value));
@@ -839,33 +865,45 @@ const ODIA_KEYS = [
   'ା','ି','ୀ','ୁ','ୂ','ୃ','େ','ୈ','ୋ','ୌ','୍','ଂ','ଃ','ଁ',
   '୦','୧','୨','୩','୪','୫','୬','୭','୮','୯','଼','ଽ',' '
 ];
-function toggleOdiaKbd(targetId) {
+function hideKbdHint() { const h = $('kbd-hint'); if (h) h.style.display = 'none'; }
+function toggleBottomFilter() {
+  const opts = $('bottom-filter-opts');
+  const showing = opts.style.display === 'block';
+  opts.style.display = showing ? 'none' : 'block';
+  $('filter-toggle').textContent = showing ? 'Show other records ▾' : 'Hide ▴';
+}
+function toggleOdiaKbd() {
   const kb = $('odia-kbd');
-  if (ODIA_TARGET === targetId && kb.style.display === 'block') {
-    kb.style.display = 'none'; ODIA_TARGET = null; return;
-  }
-  ODIA_TARGET = targetId;
+  const showing = kb.style.display === 'block';
   if (!kb.dataset.built) {
     kb.querySelector('#odia-keys').innerHTML = ODIA_KEYS.map(k =>
-      `<button type="button" onclick="odiaType('${k === ' ' ? ' ' : k}')">${k === ' ' ? 'space' : k}</button>`).join('');
+      `<button type="button" data-ch="${k === ' ' ? 'SPACE' : k}">${k === ' ' ? 'space' : k}</button>`).join('');
+    // insert on mousedown + preventDefault so the focused field keeps focus/selection
+    kb.querySelector('#odia-keys').addEventListener('mousedown', ev => {
+      const b = ev.target.closest('button'); if (!b) return;
+      ev.preventDefault();
+      const ch = b.getAttribute('data-ch');
+      odiaType(ch === 'SPACE' ? ' ' : ch);
+    });
     kb.dataset.built = '1';
   }
-  kb.style.display = 'block';
+  kb.style.display = showing ? 'none' : 'block';
 }
 function odiaType(ch) {
-  if (!ODIA_TARGET) return;
-  const el = $(ODIA_TARGET); if (!el) return;
+  const el = ODIA_TARGET ? $(ODIA_TARGET) : null;
+  if (!el) { const h = $('kbd-hint'); if (h) h.style.display = 'inline'; return; }
   const s = el.selectionStart ?? el.value.length, e = el.selectionEnd ?? el.value.length;
   el.value = el.value.slice(0, s) + ch + el.value.slice(e);
-  const pos = s + ch.length; el.setSelectionRange(pos, pos); el.focus();
+  const pos = s + ch.length;
+  try { el.setSelectionRange(pos, pos); } catch (_) {}
   el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change'));
 }
 function odiaBackspace() {
-  if (!ODIA_TARGET) return;
-  const el = $(ODIA_TARGET); if (!el) return;
-  el.value = el.value.slice(0, -1);
+  const el = ODIA_TARGET ? $(ODIA_TARGET) : null; if (!el) return;
+  const s = el.selectionStart ?? el.value.length, e = el.selectionEnd ?? el.value.length;
+  if (s === e && s > 0) { el.value = el.value.slice(0, s-1) + el.value.slice(e); try { el.setSelectionRange(s-1, s-1); } catch(_){} }
+  else if (s !== e) { el.value = el.value.slice(0, s) + el.value.slice(e); try { el.setSelectionRange(s, s); } catch(_){} }
   el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change'));
-  el.focus();
 }
 async function saveField(el, f, odiaVal) {
   dirty++; $('savestate').textContent = 'Saving…';
