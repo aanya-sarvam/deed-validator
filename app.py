@@ -319,8 +319,19 @@ def claim(doc_id: int, user=Depends(current_user)):
         if not doc:
             raise HTTPException(404, "Document not found")
         editable = False
-        if doc["status"] in ("validated", "flagged", "reviewed"):
+        if doc["status"] in ("validated", "reviewed"):
             pass  # read-only
+        elif doc["status"] == "flagged":
+            # A flagged deed can be re-opened to correct it. Only the assigned
+            # expert (or admin) may do so; opening takes the lock but leaves the
+            # flag until an explicit Unflag/Approve/Skip action.
+            if user["role"] == "admin" or doc["assigned_to"] == user["id"] or not doc["assigned_to"]:
+                con.execute(
+                    "UPDATE documents SET locked_by=%s, locked_at=now() WHERE id=%s",
+                    (user["id"], doc_id))
+                editable = True
+            else:
+                raise HTTPException(409, f"Assigned to {doc['assigned_name']}")
         elif doc["status"] == "in_monitor_review":
             if user["role"] in ("monitor", "admin"):
                 con.execute(
@@ -496,7 +507,7 @@ def require_lock(con, doc_id, user):
     # lock but leaves status pending; the first edit promotes it to in_review.
     holds = doc["locked_by"] == user["id"]
     ok = holds and (
-        doc["status"] in ("pending", "in_review") or
+        doc["status"] in ("pending", "in_review", "flagged") or
         (doc["status"] == "in_monitor_review" and user["role"] in ("monitor", "admin")))
     if not ok:
         raise HTTPException(409, "Document is not checked out to you — open it first")
@@ -601,6 +612,23 @@ def flag(doc_id: int, body: FlagIn, user=Depends(current_user)):
                     "VALUES (%s,'flag',%s,%s)", (doc_id, body.reason, user["id"]))
         con.commit()
     return {"ok": True}
+
+
+@app.post("/api/documents/{doc_id}/unflag")
+def unflag(doc_id: int, user=Depends(current_user)):
+    """Clear a flag so the deed can be corrected. Returns it to in_review,
+    locked to the current user so they can keep editing."""
+    with connect() as con:
+        require_lock(con, doc_id, user)
+        con.execute(
+            "UPDATE documents SET status='in_review', flag_reason=NULL, "
+            "locked_by=%s, locked_at=now() WHERE id=%s", (user["id"], doc_id))
+        con.execute("INSERT INTO edit_log (document_id, action, user_id) "
+                    "VALUES (%s,'unflag',%s)", (doc_id, user["id"]))
+        con.commit()
+        out = doc_payload(con, doc_id)
+    out["editable"] = True
+    return out
 
 
 @app.post("/api/documents/{doc_id}/skip")

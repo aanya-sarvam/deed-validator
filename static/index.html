@@ -368,6 +368,7 @@
       <span id="savestate">All changes saved</span>
       <button onclick="doSkip()" id="btn-skip">Skip</button>
       <button class="danger" onclick="doFlag()" id="btn-flag">Flag</button>
+      <button onclick="doUnflag()" id="btn-unflag" style="display:none">Unflag</button>
       <button class="primary" onclick="doApprove()" id="btn-approve">Approve &amp; next</button>
       <button class="primary" onclick="doReview()" id="btn-review" style="display:none">Mark monitored &amp; next</button>
     </div>
@@ -623,8 +624,13 @@ async function runSearch(page) {
 function menuHtml(r) {
   const canValidate = !['validated','flagged','reviewed'].includes(r.status);
   const actionLabel = ROLE === 'monitor' ? 'Review' : 'Validate';
-  const action = `<button onclick="viewDoc(${r.id});closeMenus()">View (read-only)</button>` +
-    (canValidate ? `<button onclick="openDoc(${r.id});closeMenus()">${actionLabel}</button>` : '');
+  let action = `<button onclick="viewDoc(${r.id});closeMenus()">View (read-only)</button>`;
+  if (canValidate) {
+    action += `<button onclick="openDoc(${r.id});closeMenus()">${actionLabel}</button>`;
+  } else if (r.status === 'flagged') {
+    // flagged deeds can be re-opened to correct/unflag
+    action += `<button onclick="openDoc(${r.id});closeMenus()">Unflag &amp; edit</button>`;
+  }
   const history = (ROLE === 'admin' || ROLE === 'monitor')
     ? `<button onclick="showHistory(${r.id});closeMenus()">Change history</button>` : '';
   let reopen = '';
@@ -769,12 +775,17 @@ function renderDoc(d) {
   pill.innerHTML = `<span class="dot"></span>${STATUS_LABEL[doc.status] || doc.status || 'Pending'}`;
   $('queuemeta').textContent = QUEUE_MODE ? `${d.remaining} in queue` : '';
   $('vfoot').style.display = editable ? 'flex' : 'none';
-  // Footer differs for a monitor reviewing vs an expert validating
+  // Footer differs by state:
+  //  - monitor reviewing an in_monitor_review deed: only "Mark monitored"
+  //  - editing a flagged deed: Skip / Unflag / Approve (no Flag)
+  //  - normal validation: Skip / Flag / Approve
   const reviewing = editable && doc.status === 'in_monitor_review';
+  const flagged = editable && doc.status === 'flagged';
   $('btn-review').style.display = reviewing ? '' : 'none';
   $('btn-approve').style.display = reviewing ? 'none' : '';
   $('btn-skip').style.display = reviewing ? 'none' : '';
-  $('btn-flag').style.display = reviewing ? 'none' : '';
+  $('btn-flag').style.display = (reviewing || flagged) ? 'none' : '';
+  $('btn-unflag').style.display = flagged ? '' : 'none';
   $('pdfbar').textContent = doc.pdf_file ? `${doc.pdf_file} — original scan` : 'No scan file';
   if (doc.pdf_file) {
     $('pdfframe').style.display = ''; $('nopdf').style.display = 'none';
@@ -935,6 +946,14 @@ async function doReview() {
   await flushPending();
   const r = await api(`/documents/${DOC.document.id}/review`, { method: 'POST' });
   afterAction();
+}
+async function doUnflag() {
+  // clear the flag and stay on this deed, now editable, so it can be corrected
+  await flushPending();
+  try {
+    const d = await api(`/documents/${DOC.document.id}/unflag`, { method: 'POST' });
+    renderDoc(d);
+  } catch (e) { alert(e.message); }
 }
 function doFlag() {
   // in-UI modal, not a browser prompt
