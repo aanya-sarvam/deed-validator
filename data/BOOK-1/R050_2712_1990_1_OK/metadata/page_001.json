@@ -1,0 +1,190 @@
+{
+  "page_num": 1,
+  "image_width": 4791,
+  "image_height": 3501,
+  "created_at": "2026-07-16T16:12:55.224961+00:00",
+  "blocks": [
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_000",
+      "coordinates": {
+        "x1": 361.0,
+        "y1": 62.0,
+        "x2": 898.0,
+        "y2": 140.0
+      },
+      "layout_tag": "header",
+      "confidence": 0.7378183007240295,
+      "reading_order": 1,
+      "text": "Schedule XXI—Form No. 1"
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_001",
+      "coordinates": {
+        "x1": 2260.0,
+        "y1": 118.0,
+        "x2": 3057.0,
+        "y2": 216.0
+      },
+      "layout_tag": "header",
+      "confidence": 0.8345717787742615,
+      "reading_order": 2,
+      "text": "REGISTER BOOK No. 1, 3 OR .4"
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_002",
+      "coordinates": {
+        "x1": 343.0,
+        "y1": 140.0,
+        "x2": 1178.0,
+        "y2": 245.0
+      },
+      "layout_tag": "header",
+      "confidence": 0.4902447760105133,
+      "reading_order": 3,
+      "text": "Copy of endorsement and certificate"
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_003",
+      "coordinates": {
+        "x1": 4206.0,
+        "y1": 291.0,
+        "x2": 4545.0,
+        "y2": 392.0
+      },
+      "layout_tag": "header",
+      "confidence": 0.3680045008659363,
+      "reading_order": 4,
+      "text": "64 Notes"
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_004",
+      "coordinates": {
+        "x1": 431.0,
+        "y1": 250.0,
+        "x2": 1111.0,
+        "y2": 698.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.623714029788971,
+      "reading_order": 5,
+      "text": "NC 2712\nstamp RS 20.00\nPS 10.0\nRS 5.0\nRs 5.00"
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_005",
+      "coordinates": {
+        "x1": 317.0,
+        "y1": 691.0,
+        "x2": 1094.0,
+        "y2": 967.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.6875485777854919,
+      "reading_order": 6,
+      "text": "Total Rs 40.00\n(on four sheets)"
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_006",
+      "coordinates": {
+        "x1": 278.0,
+        "y1": 956.0,
+        "x2": 1205.0,
+        "y2": 1430.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.5160903334617615,
+      "reading_order": 7,
+      "text": "Admitted under Act of 1872 (Orissa)\nAct, No. 23                                     2\nof which was passed by Legislative Council,\nnot withstanding any other law to the contrary,"
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_007",
+      "coordinates": {
+        "x1": 595.0,
+        "y1": 1407.0,
+        "x2": 1228.0,
+        "y2": 1754.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.5841000080108643,
+      "reading_order": 8,
+      "text": "H.K. Safakhy\n8-5-90\nRegistering Officer,\nDHENKANAL."
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_008",
+      "coordinates": {
+        "x1": 2545.0,
+        "y1": 224.0,
+        "x2": 3391.0,
+        "y2": 347.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.40319690108299255,
+      "reading_order": 9,
+      "text": "Copy of documents No 2712."
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_009",
+      "coordinates": {
+        "x1": 209.0,
+        "y1": 1630.0,
+        "x2": 568.0,
+        "y2": 2013.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.34377720952033997,
+      "reading_order": 10,
+      "text": "A1 16.00\nA9(9/5).00\nA9(6) 3.00\ngB 1.00"
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_010",
+      "coordinates": {
+        "x1": 215.0,
+        "y1": 2202.0,
+        "x2": 1257.0,
+        "y2": 3064.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.5807923674583435,
+      "reading_order": 11,
+      "text": "8th May 1990\n7A'm 10 30 A\n\nTambeswar Behera ... ....\nChhakadi Behero .....\nSukhaikateni S.S.... Sadur...\nDhenkanal by caste Gopal altv\nH.K. Satapathy vet-\n8/5)90\nRegd Forest Officer,\n99 C.G. No"
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_011",
+      "coordinates": {
+        "x1": 1237.0,
+        "y1": 267.0,
+        "x2": 4326.0,
+        "y2": 3191.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.8633244633674622,
+      "reading_order": 12,
+      "text": "NO 2712.\n64\n90-80\n13\n15\n17\n19\n21\n23\n25\n27\n29\n31\n33\n35\n37\n39\n41\n43\n45\n47\n49\n51\n53\n55\n57\n59\n61\n63\n65\n67\n69\n71\n73\n75\n77\n79\n81\n83\n85\n87\n89\n91\n93\n95\n97\n99\n101\n103\n105\n107\n109\n111\n113\n115\n117\n119\n121\n123\n125\n127\n129\n131\n133\n135\n137\n139\n141\n143\n145\n147\n149\n151\n153\n155\n157\n159\n161\n163\n165\n167\n169\n171\n173\n175\n177\n179\n181\n183\n185\n187\n189\n191\n193\n195\n197\n199\n201\n203\n205\n207\n209\n211\n213\n215\n217\n219\n221\n223\n225\n227\n229\n231\n233\n235\n237\n239\n241\n243\n245\n247\n249\n251\n253\n255\n257\n259\n261\n263\n265\n267\n269\n271\n273\n275\n277\n279\n281\n283\n285\n287\n289\n291\n293\n295\n297\n299\n301\n303\n305\n307\n309\n311\n313\n315\n317\n319\n321\n323\n325\n327\n329\n331\n333\n335\n337\n339\n341\n343\n345\n347\n349\n351\n353\n355\n357\n359\n361\n363\n365\n367\n369\n371\n373\n375\n377\n379\n381\n383\n385\n387\n389\n391\n393\n395\n397\n399\n401\n403\n405\n407\n409\n411\n413\n415\n417\n419\n421\n423\n425\n427\n429\n431\n433\n435\n437\n439\n441\n443\n445\n447\n449\n451\n453\n455\n457\n459\n461\n463\n465\n467\n469\n471\n473\n475\n477\n479\n481\n483\n485\n487\n489\n491\n493\n495\n497\n499\n501\n503\n505\n507\n509\n511\n513\n515\n517\n519\n521\n523\n525\n527\n529\n531\n533\n535\n537\n539\n541\n543\n545\n547\n549\n551\n553\n555\n557\n559\n561\n563\n565\n567\n569\n571\n573\n575\n577\n579\n581\n583\n585\n587\n589\n591\n593\n595\n597\n599\n601\n603\n605\n607\n609\n611\n613\n615\n617\n619\n621\n623\n625\n627\n629\n631\n633\n635\n637\n639\n641\n643\n645\n647\n649\n651\n653\n655\n657\n659\n661\n663\n665\n667\n669\n671\n673\n675\n677\n679\n681\n683\n685\n687\n689\n691\n693\n695\n697\n699\n701\n703\n705\n707\n709\n711\n713\n715\n717\n719\n721\n723\n725\n727\n729\n731\n733\n735\n737\n739\n741\n743\n745\n747\n749\n751\n753\n755\n757\n759\n761\n763\n765\n767\n769\n771\n773\n775\n777\n779\n781\n783\n785\n787\n789\n791\n793\n795\n797\n799\n801\n803\n805\n807\n809\n811\n813\n815\n817\n819\n821\n823\n825\n827\n829\n831\n833\n835\n837\n839\n841\n843\n845\n847\n849\n851\n853\n855\n857\n859\n861\n863\n865\n867\n869\n871\n873\n875\n877\n879\n881\n883\n885\n887\n889\n891\n893\n895\n897\n899\n901\n903\n905\n907\n909\n911\n913\n915\n917\n919\n921\n923\n925\n927\n929\n931\n933\n935\n937\n939\n941\n943\n945\n947\n949\n951\n953\n955\n957\n959\n961\n963\n965\n967\n969\n971\n973\n975\n977\n979\n981\n983\n985\n987\n989\n991\n993\n995\n997\n999\n1001\n1003\n1005\n1007\n1009\n1011\n1013\n1015\n1017\n1019\n1021\n1023\n1025\n1027\n1029\n1031\n1033\n1035\n1037\n1039\n1041\n1043\n1045\n1047\n1049\n1051\n1053\n1055\n1057\n1059\n1061\n1063\n1065\n1067\n1069\n1071\n1073\n1075\n1077\n1079\n1081\n1083\n1085\n1087\n1089\n1091\n1093\n1095\n1097\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101\n1099\n1101"
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_012",
+      "coordinates": {
+        "x1": 4417.0,
+        "y1": 455.0,
+        "x2": 4585.0,
+        "y2": 546.0
+      },
+      "layout_tag": "page-number",
+      "confidence": 0.6300036311149597,
+      "reading_order": 13,
+      "text": "162"
+    },
+    {
+      "block_id": "20260716_568c4f0a-883f-476e-8ffd-6b520c45e018_1_block_013",
+      "coordinates": {
+        "x1": 310.0,
+        "y1": 3062.0,
+        "x2": 1015.0,
+        "y2": 3145.0
+      },
+      "layout_tag": "footer",
+      "confidence": 0.7159625291824341,
+      "reading_order": 14,
+      "text": "OGP (Forms) 11--7,50,000—1984-85."
+    }
+  ]
+}

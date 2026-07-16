@@ -13,7 +13,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from db import connect, init_db, hash_pw, check_pw, SESSION_HOURS
-from export import build_export_workbook
 
 LOCK_TIMEOUT_MIN = 30
 app = FastAPI(title="Deed Validation")
@@ -72,33 +71,54 @@ def _auto_ingest():
         print("[startup] ERROR: database never became reachable", flush=True)
         return
 
-    # 2) load data if empty
+    # 2) load data if the DB is empty.
+    #    We run a single worker (see Dockerfile), so no cross-worker race exists.
+    #    We use a NON-BLOCKING advisory lock: if for any reason another process
+    #    holds it, we simply skip rather than hang forever (a blocking lock left
+    #    behind by a killed process was causing the app to freeze on boot).
     try:
-        con = connect()
-        try:
-            con.execute("SELECT pg_advisory_lock(424242)")
-            n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
-            if n:
-                _ingest_status.update(state="done", documents=n, detail="already loaded")
-                _repair_scans(con)
-                return
-        finally:
-            con.close()
-
-        found = sorted(glob.glob("data/**/*.xlsx", recursive=True))
-        print(f"[startup] xlsx files found: {found}", flush=True)
-        if not found:
-            _ingest_status.update(state="error", detail="no .xlsx found under data/")
-            print("[startup] ERROR: no Excel file found under data/", flush=True)
-            return
-        from ingest import ingest as run_ingest
-        _ingest_status.update(state="running", detail=found[0])
-        print(f"[startup] auto-ingesting {found[0]}", flush=True)
-        run_ingest(found[0], str(Path(found[0]).parent))
         with connect() as con:
-            n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
-        _ingest_status.update(state="done", documents=n, detail=found[0])
-        print(f"[startup] ingest complete — {n} documents", flush=True)
+            got_lock = con.execute("SELECT pg_try_advisory_lock(424242) AS ok").fetchone()["ok"]
+            if not got_lock:
+                # someone else is already ingesting; just report current count
+                n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+                _ingest_status.update(state="done", documents=n, detail="ingest handled elsewhere")
+                print("[startup] ingest lock held elsewhere; skipping", flush=True)
+                return
+            try:
+                n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+                if n:
+                    _ingest_status.update(state="done", documents=n, detail="already loaded")
+                    _repair_scans(con)
+                    print(f"[startup] already loaded — {n} documents", flush=True)
+                    return
+
+                json_pages = glob.glob("data/**/page_*.json", recursive=True)
+                pdfs = glob.glob("data/**/R*.pdf", recursive=True)
+                if json_pages and pdfs:
+                    from ingest_json import ingest_dir
+                    _ingest_status.update(state="running", detail=f"{len(pdfs)} PDF+JSON deeds")
+                    print("[startup] auto-ingesting PDF+JSON deeds from data/", flush=True)
+                    ingest_dir("data", init=False)
+                    n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+                    _ingest_status.update(state="done", documents=n, detail="PDF+JSON")
+                    print(f"[startup] JSON ingest complete — {n} documents", flush=True)
+                    return
+
+                found = sorted(glob.glob("data/**/*.xlsx", recursive=True))
+                if not found:
+                    _ingest_status.update(state="error", detail="no PDF+JSON or .xlsx under data/")
+                    print("[startup] ERROR: no PDF+JSON or Excel found under data/", flush=True)
+                    return
+                from ingest import ingest as run_ingest
+                _ingest_status.update(state="running", detail=found[0])
+                print(f"[startup] auto-ingesting {found[0]}", flush=True)
+                run_ingest(found[0], str(Path(found[0]).parent))
+                n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+                _ingest_status.update(state="done", documents=n, detail=found[0])
+                print(f"[startup] ingest complete — {n} documents", flush=True)
+            finally:
+                con.execute("SELECT pg_advisory_unlock(424242)")
     except Exception as e:
         _ingest_status.update(state="error", detail=str(e))
         print("[startup] INGEST FAILED:", flush=True)
@@ -266,7 +286,8 @@ def doc_payload(con, doc_id):
     if not doc:
         raise HTTPException(404, "Document not found")
     fields = con.execute(
-        "SELECT id, section, label, ocr_value, current_value, odia_value, multiline "
+        "SELECT id, section, label, ocr_value, current_value, odia_value, multiline, "
+        "field_kind, layout_tag "
         "FROM fields WHERE document_id = %s ORDER BY position", (doc_id,)).fetchall()
     remaining = con.execute(
         "SELECT COUNT(*) c FROM documents WHERE status IN ('pending','in_review')"
@@ -998,13 +1019,29 @@ def stats(user=Depends(current_user)):
 
 @app.get("/api/export")
 def export_corrected(user=Depends(require_admin)):
-    """Corrected dataset in the same layout as the input Excel
-    (one sheet per book, original columns, party strings reassembled),
-    plus an Audit sheet listing every correction."""
-    buf = build_export_workbook()
+    """Corrected dataset as JSON — the same per-page block structure that was
+    ingested (one folder per deed, metadata/page_NNN.json), with each block's
+    text replaced by the expert's corrected value. Returned as a ZIP."""
+    from export_json import build_export_zip
+    buf = build_export_zip()
     return StreamingResponse(
-        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=corrected_deeds.xlsx"})
+        buf, media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=corrected_deeds_json.zip"})
+
+
+@app.get("/api/documents/{doc_id}/export")
+def export_one(doc_id: int, user=Depends(require_admin)):
+    """Corrected JSON for a single deed, as a ZIP of its per-page files."""
+    from export_json import build_single_deed_json
+    with connect() as con:
+        d = con.execute("SELECT deed_number FROM documents WHERE id=%s", (doc_id,)).fetchone()
+    if not d:
+        raise HTTPException(404, "Document not found")
+    buf = build_single_deed_json(d["deed_number"])
+    safe = d["deed_number"].replace("/", "_")
+    return StreamingResponse(
+        buf, media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={safe}_corrected.zip"})
 
 
 # static frontend last, so /api wins

@@ -1,0 +1,164 @@
+{
+  "page_num": 1,
+  "image_width": 4855,
+  "image_height": 3454,
+  "created_at": "2026-07-16T16:08:43.784125+00:00",
+  "blocks": [
+    {
+      "block_id": "20260716_6f3d5292-85be-4b78-a5c0-7fe31e3d2188_1_block_000",
+      "coordinates": {
+        "x1": 412.0,
+        "y1": 154.0,
+        "x2": 933.0,
+        "y2": 211.0
+      },
+      "layout_tag": "header",
+      "confidence": 0.6794885396957397,
+      "reading_order": 1,
+      "text": "Schedule XXI—Form No. 1"
+    },
+    {
+      "block_id": "20260716_6f3d5292-85be-4b78-a5c0-7fe31e3d2188_1_block_001",
+      "coordinates": {
+        "x1": 2263.0,
+        "y1": 134.0,
+        "x2": 3049.0,
+        "y2": 198.0
+      },
+      "layout_tag": "header",
+      "confidence": 0.7862902283668518,
+      "reading_order": 2,
+      "text": "REGISTER BOOK No. 1, 3 OR 4"
+    },
+    {
+      "block_id": "20260716_6f3d5292-85be-4b78-a5c0-7fe31e3d2188_1_block_002",
+      "coordinates": {
+        "x1": 400.0,
+        "y1": 233.0,
+        "x2": 1201.0,
+        "y2": 306.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.2692547142505646,
+      "reading_order": 3,
+      "text": "Copy of endorsement and certificate"
+    },
+    {
+      "block_id": "20260716_6f3d5292-85be-4b78-a5c0-7fe31e3d2188_1_block_003",
+      "coordinates": {
+        "x1": 289.0,
+        "y1": 438.0,
+        "x2": 1043.0,
+        "y2": 710.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.35651934146881104,
+      "reading_order": 4,
+      "text": "stamps Rs. 200 - 00\n? 100 . 00\n? 7-00\n? 1-00\nc"
+    },
+    {
+      "block_id": "20260716_6f3d5292-85be-4b78-a5c0-7fe31e3d2188_1_block_004",
+      "coordinates": {
+        "x1": 332.0,
+        "y1": 696.0,
+        "x2": 989.0,
+        "y2": 924.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.40638843178749084,
+      "reading_order": 5,
+      "text": "Rs. 308.00\non four sheets"
+    },
+    {
+      "block_id": "20260716_6f3d5292-85be-4b78-a5c0-7fe31e3d2188_1_block_005",
+      "coordinates": {
+        "x1": 361.0,
+        "y1": 910.0,
+        "x2": 1128.0,
+        "y2": 1548.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.41940465569496155,
+      "reading_order": 6,
+      "text": "+ 54 ozs\n_______ / Apr\n... recd $31\n$28.80\n\n86 Sch\nTime + .23 c b & (2 ) Stamp\ndue at time of P.L.T. payment due to B.Panda\nRec'd from ...\n• B. Panda\nG16"
+    },
+    {
+      "block_id": "20260716_6f3d5292-85be-4b78-a5c0-7fe31e3d2188_1_block_006",
+      "coordinates": {
+        "x1": 2553.0,
+        "y1": 219.0,
+        "x2": 3401.0,
+        "y2": 304.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.2636547386646271,
+      "reading_order": 7,
+      "text": "Copy of documents 1/0-34/55"
+    },
+    {
+      "block_id": "20260716_6f3d5292-85be-4b78-a5c0-7fe31e3d2188_1_block_007",
+      "coordinates": {
+        "x1": 317.0,
+        "y1": 1536.0,
+        "x2": 1153.0,
+        "y2": 1920.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.2621161937713623,
+      "reading_order": 8,
+      "text": "Regd Wing Officer\nChoukanal\n\nAW 80-00\nA101 (25)-00\nA93 (6) 3-00\n9 (3) 1-00\n_______\nRS 89'00"
+    },
+    {
+      "block_id": "20260716_6f3d5292-85be-4b78-a5c0-7fe31e3d2188_1_block_008",
+      "coordinates": {
+        "x1": 371.0,
+        "y1": 1951.0,
+        "x2": 1347.0,
+        "y2": 2767.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.5845832824707031,
+      "reading_order": 9,
+      "text": "10\n5th June 1989\n\nBanamali Prachhan..\nBhima Prachhan ..\nGandhosana Ghorcha\nChandarpat\nCultr - B'Panda\n516"
+    },
+    {
+      "block_id": "20260716_6f3d5292-85be-4b78-a5c0-7fe31e3d2188_1_block_009",
+      "coordinates": {
+        "x1": 354.0,
+        "y1": 2903.0,
+        "x2": 1139.0,
+        "y2": 3072.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.28042086958885193,
+      "reading_order": 10,
+      "text": "812176"
+    },
+    {
+      "block_id": "20260716_6f3d5292-85be-4b78-a5c0-7fe31e3d2188_1_block_010",
+      "coordinates": {
+        "x1": 1325.0,
+        "y1": 301.0,
+        "x2": 4296.0,
+        "y2": 3127.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.8223029375076294,
+      "reading_order": 11,
+      "text": "10 18 1975"
+    },
+    {
+      "block_id": "20260716_6f3d5292-85be-4b78-a5c0-7fe31e3d2188_1_block_011",
+      "coordinates": {
+        "x1": 460.0,
+        "y1": 3120.0,
+        "x2": 1124.0,
+        "y2": 3174.0
+      },
+      "layout_tag": "footer",
+      "confidence": 0.5416013598442078,
+      "reading_order": 12,
+      "text": "O(P (Form) 11--7,50,000 -19-4 <6"
+    }
+  ]
+}

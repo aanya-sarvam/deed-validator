@@ -1,0 +1,99 @@
+{
+  "page_num": 2,
+  "image_width": 4923,
+  "image_height": 3407,
+  "created_at": "2026-07-16T16:08:01.669632+00:00",
+  "blocks": [
+    {
+      "block_id": "20260716_a304b8fa-e410-4bb3-ac68-4b0dbfd11901_2_block_000",
+      "coordinates": {
+        "x1": 275.0,
+        "y1": 178.0,
+        "x2": 778.0,
+        "y2": 230.0
+      },
+      "layout_tag": "header",
+      "confidence": 0.39463502168655396,
+      "reading_order": 1,
+      "text": "கீழ்க்கண்ட படி—Form No, 1"
+    },
+    {
+      "block_id": "20260716_a304b8fa-e410-4bb3-ac68-4b0dbfd11901_2_block_001",
+      "coordinates": {
+        "x1": 357.0,
+        "y1": 662.0,
+        "x2": 1280.0,
+        "y2": 997.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.30229461193084717,
+      "reading_order": 2,
+      "text": "... ... Jayadeba Rout\nIdentifi S/o Ajuna Rout....\nOf Same place -\nProlo .... .... ..."
+    },
+    {
+      "block_id": "20260716_a304b8fa-e410-4bb3-ac68-4b0dbfd11901_2_block_002",
+      "coordinates": {
+        "x1": 2075.0,
+        "y1": 137.0,
+        "x2": 2867.0,
+        "y2": 204.0
+      },
+      "layout_tag": "image-caption",
+      "confidence": 0.2692955434322357,
+      "reading_order": 3,
+      "text": "REGISTER BOOK No. 1, 3 OR 4"
+    },
+    {
+      "block_id": "20260716_a304b8fa-e410-4bb3-ac68-4b0dbfd11901_2_block_003",
+      "coordinates": {
+        "x1": 673.0,
+        "y1": 977.0,
+        "x2": 1325.0,
+        "y2": 1225.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.31276822090148926,
+      "reading_order": 4,
+      "text": "KC Burman\n26. 4. 88\nHeadstarting Officer\nDhenkunal."
+    },
+    {
+      "block_id": "20260716_a304b8fa-e410-4bb3-ac68-4b0dbfd11901_2_block_004",
+      "coordinates": {
+        "x1": 281.0,
+        "y1": 1218.0,
+        "x2": 1338.0,
+        "y2": 1672.0
+      },
+      "layout_tag": "paragraph",
+      "confidence": 0.32945504784584045,
+      "reading_order": 5,
+      "text": "( a ) 5097- ୩ଗଟି 2120\n୨୧.୪.୩୮\n( b ) 5098- ଜହ୍ନ ନବି 2120\n୨୧.୪.୩୮"
+    },
+    {
+      "block_id": "20260716_a304b8fa-e410-4bb3-ac68-4b0dbfd11901_2_block_005",
+      "coordinates": {
+        "x1": 1296.0,
+        "y1": 180.0,
+        "x2": 4693.0,
+        "y2": 3037.0
+      },
+      "layout_tag": "table",
+      "confidence": 0.7228273749351501,
+      "reading_order": 6,
+      "text": "<table>\n<thead>\n<tr>\n<th colspan=\"10\">Copy of documents 25.26</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>୧</td>\n<td>ପାହୁ</td>\n<td>୩୧୮୭</td>\n<td>ବୋଲ</td>\n<td>B</td>\n<td>H</td>\n<td>singh</td>\n<td>P</td>\n<td>P28</td>\n<td>7</td>\n</tr>\n<tr>\n<td>୨</td>\n<td>ନଗଟି</td>\n<td>୩୨୬୦</td>\n<td>ର</td>\n<td>nr</td>\n<td>୫</td>\n<td>ବକ୍‌ରେ</td>\n<td>2128</td>\n<td>2</td>\n<td>୨୪୮୮</td>\n<td>922</td>\n</tr>\n<tr>\n<td>୩</td>\n<td>nr</td>\n<td>୩</td>\n<td>ଜୈ</td>\n<td>ନାମ</td>\n<td>31</td>\n<td>ଚର୍‌ଚିଆ</td>\n<td>Gaj</td>\n<td>nr</td>\n<td>କାମୁ</td>\n<td>922</td>\n</tr>\n<tr>\n<td>୪</td>\n<td>nr</td>\n<td>୩</td>\n<td>ଜୈ</td>\n<td>ନାମ</td>\n<td>31</td>\n<td>ଚର୍‌ଚିଆ</td>\n<td>Gaj</td>\n<td>nr</td>\n<td>କାମୁ</td>\n<td>922</td>\n</tr>\n<tr>\n<td>୫</td>\n<td>S.</td>\n<td>e</td>\n<td>S.</td>\n<td>T</td>\n<td>କୁ</td>\n<td>ନି</td>\n<td>ଏସି</td>\n<td>୦</td>\n<td>Y</td>\n<td>R</td>\n</tr>\n<tr>\n<td>୬</td>\n<td>see</td>\n<td>6</td>\n<td>(A)</td>\n<td>ପ୍ରି</td>\n<td>ପୋଡ</td>\n<td>&</td>\n<td>written by</td>\n<td>B</td>\n<td>K</td>\n<td>singn</td>\n</tr>\n<tr>\n<td>୭</td>\n<td>992</td>\n<td>4</td>\n<td>nr</td>\n<td>Pre</td>\n<td>posed</td>\n<td>&</td>\n<td>written by</td>\n<td>B</td>\n<td>K</td>\n<td>singn</td>\n</tr>\n<tr>\n<td>୮</td>\n<td>W</td>\n<td>DKL</td>\n<td>L</td>\n<td>MO</td>\n<td>2/</td>\n<td>79</td>\n<td>P26</td>\n<td>4</td>\n<td>--</td>\n<td>-</td>\n</tr>\n<tr>\n<td>୯</td>\n<td>୧୪୨୨</td>\n<td>୪୨୨</td>\n<td>୪</td>\n<td>nr</td>\n<td>୫୦୦</td>\n<td>--</td>\n<td>ଅଗ୍ରା</td>\n<td>2120</td>\n<td>9441</td>\n<td>ଗୁରୁ</td>\n</tr>\n<tr>\n<td>୧୦</td>\n<td>୧୪୨୨</td>\n<td>୪୨୨</td>\n<td>୪</td>\n<td>nr</td>\n<td>୫୦୦</td>\n<td>--</td>\n<td>ଅଗ୍ରା</td>\n<td>2120</td>\n<td>9441</td>\n<td>ଗୁରୁ</td>\n</tr>\n<tr>\n<td>୧୧</td>\n<td>୧୪୨୨</td>\n<td>୪୨୨</td>\n<td>୪</td>\n<td>nr</td>\n<td>୫୦୦</td>\n<td>--</td>\n<td>ଅଗ୍ରା</td>\n<td>2120</td>\n<td>9441</td>\n<td>ଗୁରୁ</td>\n</tr>\n<tr>\n<td>୧୨</td>\n<td>୧୪୨୨</td>\n<td>୪୨୨</td>\n<td>୪</td>\n<td>nr</td>\n<td>୫୦୦</td>\n<td>--</td>\n<td>ଅଗ୍ରା</td>\n<td>2120</td>\n<td>9441</td>\n<td>ଗୁରୁ</td>\n</tr>\n<tr>\n<td>୧୩</td>\n<td>(ଓଡ଼ିଆ)</td>\n<td>ଅଗ୍ରା</td>\n<td>୪୨୨</td>\n<td>୪</td>\n<td>nr</td>\n<td>B</td>\n<td>Pradhan (Seal)</td>\n<td>Brahma</td>\n<td></td>\n<td></td>\n</tr>\n<tr>\n<td>୧୪</td>\n<td>nanda</td>\n<td>Pradhan</td>\n<td>Stamp</td>\n<td>provider</td>\n<td>Collectoorte</td>\n<td>Dhenkanal</td>\n<td>to</td>\n<td>2120</td>\n<td>9441</td>\n<td>Brahma</td>\n</tr>\n<tr>\n<td>୧୫</td>\n<td>827</td>\n<td>22</td>\n<td>900</td>\n<td>୪</td>\n<td>nr</td>\n<td>DPO</td>\n<td>--</td>\n<td>2120</td>\n<td>9441</td>\n<td>Brahma</td>\n</tr>\n<tr>\n<td>୧୬</td>\n<td>827</td>\n<td>4</td>\n<td>nr</td>\n<td>B</td>\n<td>Pradhan</td>\n<td>(Seal)</td>\n<td>Brahmana</td>\n<td>nda</td>\n<td>Pradhan</td>\n<td></td>\n</tr>\n<tr>\n<td>୧୭</td>\n<td>Stamp</td>\n<td>provider</td>\n<td>Collectoorte</td>\n<td>+</td>\n<td>Dhenkanal</td>\n<td>no</td>\n<td>L029</td>\n<td>22</td>\n<td>92</td>\n<td></td>\n</tr>\n<tr>\n<td>୧୮</td>\n<td>nr</td>\n<td>d &</td>\n<td>--</td>\n<td>--</td>\n<td>2120</td>\n<td>B</td>\n<td>Dhenkanal</td>\n<td>pradh</td>\n<td>stamp provider</td>\n<td></td>\n</tr>\n<tr>\n<td>୧୯</td>\n<td>B</td>\n<td>Pradhan</td>\n<td>(Seal)</td>\n<td>Bookmananda</td>\n<td>pradh</td>\n<td>Stamperender</td>\n<td></td>\n<td></td>\n<td></td>\n<td></td>\n</tr>\n<tr>\n<td>୨୦</td>\n<td>Collectoorte</td>\n<td>Dhenna</td>\n<td>nal</td>\n<td>no</td>\n<td>829</td>\n<td>944</td>\n<td>944</td>\n<td>944</td>\n<td>944</td>\n<td>944</td>\n</tr>\n<tr>\n<td>୨୧</td>\n<td>ସଂପାଦକ</td>\n<td>୨୧</td>\n<td>୨୧</td>\n<td>ସଂପାଦକ</td>\n<td>ପ୍ରକାଶ</td>\n<td>ପ୍ରବନ୍ଧ</td>\n<td>ପ୍ରବନ୍ଧ</td>\n<td>B</td>\n<td>Pradhan</td>\n<td></td>\n</tr>\n<tr>\n<td>୨୨</td>\n<td>(Seal)</td>\n<td>Brahma</td>\n<td>nanda</td>\n<td>Pradhon</td>\n<td>stamp</td>\n<td>vender</td>\n<td>Collectoorte</td>\n<td></td>\n<td></td>\n<td></td>\n</tr>\n<tr>\n<td>୨୩</td>\n<td>Dhenkanal</td>\n<td>--</td>\n<td>--</td>\n<td>--</td>\n<td>--</td>\n<td>--</td>\n<td>--</td>\n<td>--</td>\n<td>--</td>\n<td>--</td>\n</tr>\n<tr>\n<td>୨୪</td>\n<td>Copied Reedy</td>\n<td></td>\n<td></td>\n<td></td>\n<td>Comprely</td>\n<td></td>\n<td>Tone Copy</td>\n<td>No Coordination</td>\n<td>is</td>\n<td>no</td>\n</tr>\n<tr>\n<td>୨୫</td>\n<td>Rameshch Bhal</td>\n<td></td>\n<td></td>\n<td></td>\n<td>Muralidharswain</td>\n<td></td>\n<td></td>\n<td></td>\n<td></td>\n<td></td>\n</tr>\n</tbody>\n</table>"
+    },
+    {
+      "block_id": "20260716_a304b8fa-e410-4bb3-ac68-4b0dbfd11901_2_block_006",
+      "coordinates": {
+        "x1": 310.0,
+        "y1": 3171.0,
+        "x2": 1225.0,
+        "y2": 3256.0
+      },
+      "layout_tag": "footer",
+      "confidence": 0.46207913756370544,
+      "reading_order": 7,
+      "text": "OGP (Forms)11—3,50,000—2.5-1684 G 28 - A"
+    }
+  ]
+}

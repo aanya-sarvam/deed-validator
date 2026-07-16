@@ -72,7 +72,10 @@ CREATE TABLE IF NOT EXISTS edit_log (
 CREATE INDEX IF NOT EXISTS idx_docs_status  ON documents(status);
 CREATE INDEX IF NOT EXISTS idx_docs_year    ON documents(year);
 CREATE INDEX IF NOT EXISTS idx_fields_doc   ON fields(document_id);
-CREATE INDEX IF NOT EXISTS idx_fields_name  ON fields(label, current_value);
+CREATE INDEX IF NOT EXISTS idx_fields_label ON fields(label);
+-- (previously indexed (label, current_value), but current_value can now hold
+--  large table HTML from Akshar blocks, which exceeds the btree size limit)
+DROP INDEX IF EXISTS idx_fields_name;
 CREATE INDEX IF NOT EXISTS idx_log_doc      ON edit_log(document_id);
 
 -- migrations for databases created before these columns existed
@@ -102,6 +105,16 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS sent_reason TEXT;  -- 'skip' | 's
 
 -- Odia value per field, alongside the (English) current_value
 ALTER TABLE fields ADD COLUMN IF NOT EXISTS odia_value TEXT NOT NULL DEFAULT '';
+-- field_kind: 'text' (normal field) or 'table' (current_value holds table HTML/JSON).
+-- Blocks coming from Akshar carry their layout_tag so the metadata view can
+-- mirror Akshar's block structure (Header / Paragraph / Table / …).
+ALTER TABLE fields ADD COLUMN IF NOT EXISTS field_kind TEXT NOT NULL DEFAULT 'text';
+ALTER TABLE fields ADD COLUMN IF NOT EXISTS layout_tag TEXT;
+-- Preserve the original Akshar block (block_id, coordinates, confidence,
+-- page_num, reading_order, ...) as JSON so corrected output can be exported
+-- in exactly the same shape as the input, with only the text replaced.
+ALTER TABLE fields ADD COLUMN IF NOT EXISTS src_block JSONB;
+ALTER TABLE fields ADD COLUMN IF NOT EXISTS page_num INT;
 """
 
 SEED_USERS = [
@@ -134,11 +147,12 @@ def init_db():
     try:
         # Serialize concurrent workers: CREATE TABLE IF NOT EXISTS is not
         # race-safe in Postgres when several processes boot simultaneously.
-        con.execute("SELECT pg_advisory_lock(424241)")
+        # Use a bounded wait so a stale advisory lock (left by a killed
+        # process) can never freeze startup forever — if we can't get it
+        # quickly, another worker is handling the schema, so proceed.
+        con.execute("SET lock_timeout = '8s'")
+        got = con.execute("SELECT pg_try_advisory_lock(424241) AS ok").fetchone()["ok"]
         con.execute(SCHEMA)
-        # Insert any seed users that don't already exist (idempotent). This
-        # backfills new seed accounts (e.g. the monitor) on existing databases
-        # without disturbing real accounts.
         with con.cursor() as cur:
             for u, n, r in SEED_USERS:
                 cur.execute(
@@ -146,5 +160,7 @@ def init_db():
                     "VALUES (%s,%s,%s,%s) ON CONFLICT (username) DO NOTHING",
                     (u, hash_pw(DEMO_PASSWORD), n, r))
         con.commit()
+        if got:
+            con.execute("SELECT pg_advisory_unlock(424241)")
     finally:
-        con.close()  # releases the advisory lock
+        con.close()

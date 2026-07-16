@@ -17,6 +17,21 @@
          font-size: 1rem; line-height: 1.5; background: var(--paper); color: #22262c; }
   .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
   .odia-wrap input { font-family: "Noto Sans Oriya", system-ui, sans-serif; }
+  .tableblock { display: block; }
+  table.edit-grid { border-collapse: collapse; width: 100%; margin: 4px 0; }
+  table.edit-grid td { border: 1px solid var(--line); padding: 0; vertical-align: top; }
+  table.edit-grid textarea { width: 100%; min-width: 60px; border: 0; padding: 5px 6px;
+    font-family: "Noto Sans Oriya", system-ui, sans-serif; font-size: 0.9333rem;
+    resize: vertical; background: transparent; line-height: 1.35; }
+  table.edit-grid textarea:focus { outline: 2px solid var(--ink); outline-offset: -2px; background: #fff; }
+  table.edit-grid td.grid-ctl { border: 0; width: 26px; text-align: center; }
+  table.edit-grid td.grid-ctl button { border: 0; background: none; color: var(--muted);
+    cursor: pointer; font-size: 0.85rem; padding: 2px 4px; }
+  table.edit-grid td.grid-ctl button:hover { color: var(--bad); }
+  .grid-actions { display: flex; gap: 6px; margin: 4px 0 2px; }
+  .grid-actions button { border: 1px solid var(--line); background: #fff; border-radius: 5px;
+    padding: 2px 10px; font-size: 0.8rem; cursor: pointer; color: var(--ink); }
+  .grid-actions button:hover { background: var(--accent-soft); }
   .kbd-btn { font-size: 0.75rem; padding: 1px 8px; margin-left: 8px; border:1px solid var(--line);
     border-radius: 5px; background:#fff; cursor:pointer; color: var(--ink); }
   .kbd-btn:hover { background: var(--accent-soft); }
@@ -827,13 +842,18 @@ function renderDoc(d) {
       secEl.innerHTML = `<h3>${f.section}</h3>`;
       pane.appendChild(secEl);
     }
+    if (f.field_kind === 'table') {
+      renderTableField(secEl, f, editable);
+      continue;
+    }
     const row = document.createElement('div'); row.className = 'frow';
+    const blockLabel = f.layout_tag ? prettyTag(f.layout_tag) : f.label;
     const tag = f.multiline ? 'textarea' : 'input';
-    row.innerHTML = `<label for="f${f.id}">${f.label}</label>
+    row.innerHTML = `<label for="f${f.id}">${blockLabel}</label>
       <${tag} id="f${f.id}" data-fid="${f.id}" ${editable ? '' : 'disabled'}></${tag}>
       <div class="ocr-orig" id="o${f.id}"></div>
       <div class="odia-wrap">
-        <label style="margin-top:6px">${f.label} (Odia)</label>
+        <label style="margin-top:6px">${blockLabel} (Odia)</label>
         <input id="f${f.id}_odia" data-fid-odia="${f.id}" lang="or" ${editable ? '' : 'disabled'}>
       </div>
       <div class="edited-by" id="eb${f.id}"></div>`;
@@ -844,7 +864,6 @@ function renderDoc(d) {
     const odiaEl = row.querySelector('[data-fid-odia]');
     odiaEl.value = f.odia_value || '';
     if (editable) {
-      // any field the user focuses becomes the keyboard's target
       el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
       odiaEl.addEventListener('focus', () => { ODIA_TARGET = odiaEl.id; hideKbdHint(); });
       el.addEventListener('change', () => saveField(el, f));
@@ -855,6 +874,95 @@ function renderDoc(d) {
   }
   pane.scrollTop = 0;
   if (editable) { const first = pane.querySelector('[data-fid]'); if (first) first.focus(); }
+}
+
+function prettyTag(t) {
+  return (t || 'block').replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// Parse a block's <table> HTML into a 2-D array of cell strings.
+function parseTableHtml(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const rows = [];
+  doc.querySelectorAll('tr').forEach(tr => {
+    const cells = [];
+    tr.querySelectorAll('th,td').forEach(td => {
+      cells.push(td.innerHTML.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').trim());
+    });
+    if (cells.length) rows.push(cells);
+  });
+  return rows;
+}
+
+// Rebuild simple <table> HTML from a 2-D array.
+function tableToHtml(rows) {
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/\n/g, '<br/>');
+  const body = rows.map(r =>
+    '<tr>' + r.map(c => `<td>${esc(c)}</td>`).join('') + '</tr>').join('\n');
+  return `<table>\n<tbody>\n${body}\n</tbody>\n</table>`;
+}
+
+// Render a table-kind field as an editable grid.
+function renderTableField(secEl, f, editable) {
+  const wrap = document.createElement('div'); wrap.className = 'frow tableblock';
+  wrap.innerHTML = `<label>${prettyTag(f.layout_tag || 'Table')}</label>`;
+  const rows = parseTableHtml(f.current_value || '');
+  const tbl = document.createElement('table'); tbl.className = 'edit-grid';
+  tbl.dataset.fid = f.id;
+
+  function draw() {
+    tbl.innerHTML = '';
+    rows.forEach((r, ri) => {
+      const tr = document.createElement('tr');
+      r.forEach((c, ci) => {
+        const td = document.createElement('td');
+        const inp = document.createElement('textarea');
+        inp.value = c; inp.rows = 1; inp.disabled = !editable;
+        inp.id = `tc_${f.id}_${ri}_${ci}`;
+        inp.dataset.r = ri; inp.dataset.c = ci;
+        if (editable) {
+          inp.addEventListener('focus', () => { ODIA_TARGET = inp.id; hideKbdHint(); });
+          inp.addEventListener('input', () => { rows[ri][ci] = inp.value;
+            $('savestate').textContent = 'Editing…'; });
+          inp.addEventListener('change', () => saveTableField(f, rows));
+        }
+        td.appendChild(inp); tr.appendChild(td);
+      });
+      if (editable) {
+        const del = document.createElement('td'); del.className = 'grid-ctl';
+        del.innerHTML = '<button title="Delete row">✕</button>';
+        del.querySelector('button').onclick = () => { rows.splice(ri, 1); draw(); saveTableField(f, rows); };
+        tr.appendChild(del);
+      }
+      tbl.appendChild(tr);
+    });
+  }
+  draw();
+  wrap.appendChild(tbl);
+  if (editable) {
+    const bar = document.createElement('div'); bar.className = 'grid-actions';
+    const addRow = document.createElement('button'); addRow.className = 'small'; addRow.textContent = '+ Row';
+    addRow.onclick = () => { const cols = rows[0] ? rows[0].length : 1;
+      rows.push(new Array(cols).fill('')); draw(); saveTableField(f, rows); };
+    const addCol = document.createElement('button'); addCol.className = 'small'; addCol.textContent = '+ Column';
+    addCol.onclick = () => { rows.forEach(r => r.push('')); draw(); saveTableField(f, rows); };
+    bar.appendChild(addRow); bar.appendChild(addCol);
+    wrap.appendChild(bar);
+  }
+  secEl.appendChild(wrap);
+}
+
+async function saveTableField(f, rows) {
+  const html = tableToHtml(rows);
+  dirty++; $('savestate').textContent = 'Saving…';
+  try {
+    await api(`/documents/${DOC.document.id}/fields/${f.id}`,
+      { method: 'PATCH', body: JSON.stringify({ value: html }) });
+    f.current_value = html;
+    $('savestate').textContent = 'All changes saved';
+  } catch (e) { $('savestate').textContent = 'Save failed: ' + e.message; }
+  finally { dirty--; }
 }
 
 function markChanged(el, f) {
@@ -1089,7 +1197,7 @@ async function loadProgress() {
     <table class="stats"><thead><tr><th>Day</th><th>Validated</th></tr></thead><tbody>${dailyRows}</tbody></table>
     <h2>Flagged documents</h2>
     <table class="stats"><thead><tr><th>Document</th><th>Reason</th><th>Flagged by</th></tr></thead><tbody>${flaggedRows}</tbody></table>
-    <p style="margin-top:16px"><button class="primary" onclick="location.href='/api/export?token='+TOKEN">Download corrected dataset (Excel)</button></p>`;
+    <p style="margin-top:16px"><button class="primary" onclick="location.href='/api/export?token='+TOKEN">Download corrected dataset (JSON)</button></p>`;
 }
 
 /* ---------- admin: assign ---------- */
