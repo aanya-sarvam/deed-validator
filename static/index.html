@@ -137,6 +137,20 @@
   .pager { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
   .pager .info { color: var(--muted); font-size: 0.8667rem; }
 
+  /* ---- transliteration suggestion dropdown (Google Input Tools style) ---- */
+  .translit-pop { position: absolute; background: var(--card); border: 1px solid var(--line);
+    border-radius: 8px; box-shadow: 0 6px 18px rgba(20,41,66,.14); z-index: 60;
+    overflow: hidden; }
+  .translit-opt { display: flex; align-items: center; gap: 9px; padding: 6px 12px;
+    cursor: pointer; white-space: nowrap; }
+  .translit-opt:hover, .translit-opt.sel { background: var(--accent-soft); }
+  .translit-opt .translit-num { color: var(--muted); font-size: 0.7333rem;
+    min-width: 11px; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  .translit-opt span[lang="or"] { font-family: "Noto Sans Oriya", system-ui, sans-serif;
+    font-size: 1.0667rem; }
+  .translit-hint { padding: 4px 12px; font-size: 0.6867rem; color: var(--muted);
+    border-top: 1px solid var(--line); background: var(--paper); white-space: nowrap; }
+
   /* ---- validate (resizable) ---- */
   #validate { height: calc(100vh - 49px); display: flex; flex-direction: column; }
   .tasktabs { display: inline-flex; gap: 2px; background: #eef1f5; border-radius: 8px; padding: 2px; }
@@ -363,7 +377,7 @@
         <button id="tab-meta" class="tasktab active" onclick="showTask('meta')">Metadata</button>
         <button id="tab-text" class="tasktab" onclick="showTask('text')">Full text</button>
       </span>
-      <button class="small" id="translit-btn" onclick="toggleTranslit()" title="Type English phonetically in Odia boxes — each word converts to Odia on space (Google Input Tools)">ଅ English→Odia: On</button>
+      <button class="small" id="translit-btn" onclick="toggleTranslit()" title="Type English phonetically in Odia boxes — pick from the spelling dropdown, or press space/enter to accept the top match (Google Input Tools)">ଅ English→Odia: On</button>
       <span class="spacer" style="flex:1"></span>
       <span class="meta" id="queuemeta"></span>
     </div>
@@ -1031,35 +1045,156 @@ function toggleTranslit() {
   TRANSLIT_ON = !TRANSLIT_ON;
   const b = $('translit-btn');
   if (b) b.textContent = 'ଅ English→Odia: ' + (TRANSLIT_ON ? 'On' : 'Off');
+  if (!TRANSLIT_ON) hideTranslitPop();
 }
-async function translitWord(w) {
+
+/* Shared floating suggestion box (like inputtools.google.com/try) */
+let TL_POP = null;
+function translitPop() {
+  if (!TL_POP) {
+    TL_POP = document.createElement('div');
+    TL_POP.className = 'translit-pop';
+    TL_POP.style.display = 'none';
+    document.body.appendChild(TL_POP);
+  }
+  return TL_POP;
+}
+const TL = { el: null, start: 0, end: 0, word: '', items: [], sel: 0, timer: null };
+
+function hideTranslitPop() {
+  translitPop().style.display = 'none';
+  TL.el = null; TL.items = [];
+}
+function positionTranslitPop(el) {
+  const p = translitPop(), r = el.getBoundingClientRect();
+  p.style.left = Math.round(window.scrollX + r.left) + 'px';
+  p.style.top = Math.round(window.scrollY + r.bottom + 3) + 'px';
+  p.style.minWidth = Math.min(Math.max(r.width, 140), 280) + 'px';
+}
+function renderTranslitPop() {
+  const p = translitPop();
+  if (!TL.el || !TL.items.length) { p.style.display = 'none'; return; }
+  p.innerHTML = TL.items.map((s, i) =>
+      `<div class="translit-opt${i === TL.sel ? ' sel' : ''}" data-i="${i}">
+         <span class="translit-num">${i + 1}</span><span lang="or">${s}</span>
+       </div>`).join('') +
+    `<div class="translit-hint">↑↓ choose · space/enter select · esc cancel</div>`;
+  p.querySelectorAll('.translit-opt').forEach(o => {
+    // mousedown (not click) so it fires before the field's blur handler
+    o.addEventListener('mousedown', ev => {
+      ev.preventDefault();
+      acceptTranslit(parseInt(o.dataset.i, 10), ' ');
+    });
+  });
+  positionTranslitPop(TL.el);
+  p.style.display = 'block';
+}
+
+function currentLatinWord(el) {
+  const caret = el.selectionStart ?? el.value.length;
+  const m = el.value.slice(0, caret).match(/[A-Za-z]+$/);
+  return m ? { word: m[0], start: caret - m[0].length, end: caret } : null;
+}
+async function fetchTranslitSuggestions(word) {
   try {
-    const d = await api('/transliterate?text=' + encodeURIComponent(w));
-    return (d.suggestions && d.suggestions[0]) || null;
+    const d = await api('/transliterate?text=' + encodeURIComponent(word));
+    return (d.suggestions && d.suggestions.length) ? d.suggestions : null;
   } catch (e) { return null; }
 }
+
 function attachTranslit(el) {
   if (el.dataset.translit) return;
   el.dataset.translit = '1';
-  el.addEventListener('keydown', ev => translitKey(ev, el));
+  el.addEventListener('input', () => onTranslitInput(el));
+  el.addEventListener('keydown', ev => onTranslitKey(ev, el));
+  el.addEventListener('blur', () => setTimeout(() => {
+    if (TL.el === el) hideTranslitPop();
+  }, 120));                            // delay so an option click can register first
 }
-async function translitKey(ev, el) {
-  if (!TRANSLIT_ON || el.disabled) return;
-  if (ev.key !== ' ' && ev.key !== 'Enter') return;
-  const caret = el.selectionStart ?? el.value.length;
-  const m = el.value.slice(0, caret).match(/[A-Za-z]+$/);
-  if (!m) return;                      // no latin word before caret
-  ev.preventDefault();
-  const word = m[0], start = caret - word.length;
-  const od = await translitWord(word);
-  const tail = ev.key === ' ' ? ' ' : (el.tagName === 'TEXTAREA' ? '\n' : '');
-  const rep = (od || word) + tail;
-  el.value = el.value.slice(0, start) + rep + el.value.slice(caret);
+
+/* Debounced: as the user types a latin word, show candidate spellings below
+   the field — nothing is auto-applied here, only on explicit selection. */
+function onTranslitInput(el) {
+  if (!TRANSLIT_ON || el.disabled) { hideTranslitPop(); return; }
+  const w = currentLatinWord(el);
+  if (!w || w.word.length < 2) { hideTranslitPop(); return; }
+  TL.el = el; TL.start = w.start; TL.end = w.end; TL.word = w.word; TL.sel = 0;
+  clearTimeout(TL.timer);
+  TL.timer = setTimeout(async () => {
+    const items = await fetchTranslitSuggestions(w.word);
+    const cur = currentLatinWord(el);
+    if (TL.el !== el || !cur || cur.word !== w.word) return;   // stale response
+    TL.items = items || []; TL.sel = 0;
+    renderTranslitPop();
+  }, 180);
+}
+
+function acceptTranslit(idx, tail) {
+  const el = TL.el;
+  if (!el || !TL.items[idx]) return;
+  const cur = currentLatinWord(el);
+  const end = (cur && cur.word === TL.word) ? cur.end : TL.end;
+  const start = end - TL.word.length;
+  const rep = TL.items[idx] + tail;
+  el.value = el.value.slice(0, start) + rep + el.value.slice(end);
   const pos = start + rep.length;
   try { el.setSelectionRange(pos, pos); } catch (_) {}
   el.dispatchEvent(new Event('input'));
   el.dispatchEvent(new Event('change'));
+  hideTranslitPop();
+  el.focus();
 }
+
+function onTranslitKey(ev, el) {
+  if (!TRANSLIT_ON || el.disabled) return;
+  const popOpen = TL.el === el && TL.items.length > 0;
+
+  if (popOpen) {
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault(); TL.sel = (TL.sel + 1) % TL.items.length; renderTranslitPop(); return;
+    }
+    if (ev.key === 'ArrowUp') {
+      ev.preventDefault(); TL.sel = (TL.sel - 1 + TL.items.length) % TL.items.length; renderTranslitPop(); return;
+    }
+    if (/^[1-9]$/.test(ev.key) && parseInt(ev.key, 10) <= TL.items.length) {
+      ev.preventDefault(); acceptTranslit(parseInt(ev.key, 10) - 1, ' '); return;
+    }
+    if (ev.key === ' ' || ev.key === 'Enter' || ev.key === 'Tab') {
+      ev.preventDefault();
+      const tail = (ev.key === 'Enter') ? (el.tagName === 'TEXTAREA' ? '\n' : '') : ' ';
+      acceptTranslit(TL.sel, tail);
+      return;
+    }
+    if (ev.key === 'Escape') { ev.preventDefault(); hideTranslitPop(); return; }
+    return;                            // any other key: let typing continue, input handler refreshes
+  }
+
+  // No dropdown showing yet (still debouncing, or fetch found nothing so far):
+  // keep the old instant convert-on-space/enter as a fallback for fast typists.
+  if (ev.key === ' ' || ev.key === 'Enter') {
+    const w = currentLatinWord(el);
+    if (!w) return;
+    ev.preventDefault();
+    clearTimeout(TL.timer);
+    const tail = (ev.key === 'Enter') ? (el.tagName === 'TEXTAREA' ? '\n' : '') : ' ';
+    (async () => {
+      const items = await fetchTranslitSuggestions(w.word);
+      const rep = (items && items[0] ? items[0] : w.word) + tail;
+      el.value = el.value.slice(0, w.start) + rep + el.value.slice(w.end);
+      const pos = w.start + rep.length;
+      try { el.setSelectionRange(pos, pos); } catch (_) {}
+      el.dispatchEvent(new Event('input'));
+      el.dispatchEvent(new Event('change'));
+      hideTranslitPop();
+    })();
+  }
+}
+
+document.addEventListener('mousedown', ev => {
+  const p = translitPop();
+  if (p.style.display !== 'none' && !p.contains(ev.target) && ev.target !== TL.el) hideTranslitPop();
+});
+window.addEventListener('resize', () => { if (TL.el) positionTranslitPop(TL.el); });
 
 async function saveField(el, f, odiaVal) {
   dirty++; $('savestate').textContent = 'Saving…';
