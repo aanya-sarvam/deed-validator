@@ -1,39 +1,41 @@
 """
-ingest_json.py — load deeds from PDF + Akshar-JSON pairs.
+ingest_json.py — load deeds from the grounding.json + ocr.jsonl format.
 
-NEW INPUT FORMAT (replaces the old Excel + PDF ingest)
-------------------------------------------------------
-Instead of an Excel sheet of metadata, each deed now arrives as:
+INPUT FORMAT (one folder per deed, named by reg_no)
+---------------------------------------------------
+    <reg_no>/
+        <reg_no>.pdf       the scanned deed
+        grounding.json     structured metadata fields extracted by the model
+        ocr.jsonl          full-page OCR text, one JSON line per page
 
-    a PDF          e.g.  R050_1334_1986_1=OK.pdf
-    a JSON folder  holding that deed's Akshar page output:
-                        page_001.json, page_002.json, ...
+grounding.json:
+    { "reg_no": "...", "book_label": "...", "deed_type": "...", ...,
+      "fields": [ { "id": "seller_details", "attr": "name", "item_index": 1,
+                    "field": "display name", "english_value": "...",
+                    "odia_text": "...", "latin_readback": "...",
+                    "found": true, "confidence": 0.9, "page": 1,
+                    "notes": "..." }, ... ] }
 
-The PDF filename encodes the deed identity:  R0xx_{regno}_{year}_{book}
-  -> deed_number = "{regno}/{year}/B{book}"   e.g. 1334/1986/B1
+ocr.jsonl (per line):
+    { "page": 3, "char_len": 1407, "audit": ..., "text": "full page text" }
+    (OCR may cover only some pages of a deed.)
 
-Akshar's page JSON has, per page, a list of blocks:
-    layout_tag   header | paragraph | footer | table | image-caption | ...
-    text         plain text, or <table>...</table> HTML for table blocks
-    reading_order
-
-The portal's Metadata tab mirrors these blocks (one field per block, headed
-by its layout tag, tables as editable grids); the Full text tab is the same
-blocks flowed together as paragraphs.
-
-LAYOUT ON DISK
---------------
-Put everything under data/. Two accepted arrangements:
-
-  (A) PDFs in one place, each deed's JSON in a sibling folder whose name
-      contains the same deed id, e.g.:
-          data/BOOK-1/R050_1334_1986_1=OK.pdf
-          data/BOOK-1/R050_1334_1986_1/page_001.json ...
-  (B) A single deed's JSON folder passed directly (dev / one-off).
+MAPPING INTO THE PORTAL
+-----------------------
+- One documents row per deed (deed_number = reg_no).
+- Each grounding field becomes an editable fields row:
+    section  : "Deed details" for scalars, else "Seller 1", "Buyer 2",
+               "Property 1", ... (from id + item_index)
+    label    : the field's display name ("Name", "Address", "Deed type", ...)
+    english  : english_value  -> current_value (editable, ocr_value immutable)
+    odia     : odia_text      -> odia_value (editable)
+    The full original field object is preserved in src_block so corrected
+    output can be exported in exactly the input shape.
+- ocr.jsonl pages, joined in page order, populate the Full text tab.
 
 USAGE
-    python ingest_json.py data            # scan data/ for all PDF+JSON deeds
-    python ingest_json.py <json_folder> <deed_number>   # load one folder
+    python ingest_json.py <data_dir>        # scan for all deed folders
+    python ingest_json.py <deed_folder>     # load a single deed folder
 """
 
 import json
@@ -44,171 +46,383 @@ from pathlib import Path
 
 from db import init_db, connect
 
-DEED_RE = re.compile(r"R\d+[_-](\d+)[_-](\d+)[_-](\d+)", re.I)  # regno, year, book
+_YEAR_RE = re.compile(r"(19|20)\d{2}")
+_SHORT_DATE_RE = re.compile(r"\b\d{1,2}[./\-]\d{1,2}[./\-](\d{2})\b")
 
 
-def parse_deed_id(name):
-    """From 'R050_1334_1986_1=OK' -> (regno, year, book, deed_number)."""
-    m = DEED_RE.search(name)
-    if not m:
-        return None
-    regno, year, book = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    return regno, year, book, f"{regno}/{year}/B{book}"
-
-
-def _tables_to_text(html):
-    rows = []
-    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S | re.I):
-        cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.S | re.I)
-        vals = []
-        for c in cells:
-            c = re.sub(r"<br\s*/?>", " ", c, flags=re.I)
-            c = re.sub(r"<[^>]+>", "", c).strip()
-            vals.append(c)
-        line = " | ".join(v for v in vals if v).strip()
-        if line:
-            rows.append(line)
-    return "\n".join(rows)
-
-
-def _block_to_fulltext(tag, text):
-    if tag == "table":
-        return _tables_to_text(text)
-    t = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
-    t = re.sub(r"<[^>]+>", "", t)
-    return t.strip()
-
-
-def _pretty_tag(tag):
-    return (tag or "block").replace("-", " ").replace("_", " ").title()
-
-
-def _load_pages(json_dir):
-    """Return blocks across all page_*.json in a folder (page, order sorted)."""
-    p = Path(json_dir)
-    pages = sorted(p.glob("page_*.json")) or sorted(p.glob("metadata/page_*.json"))
-    blocks = []
-    for pg in pages:
-        d = json.load(open(pg, encoding="utf-8"))
-        pnum = d.get("page_num", 0)
-        for b in sorted(d.get("blocks", []), key=lambda x: x.get("reading_order", 0)):
-            # keep (page, order, tag, text, full-original-block) so export can
-            # emit the exact same JSON shape with only the text corrected
-            blocks.append((pnum, b.get("reading_order", 0),
-                           b.get("layout_tag", "block"), b.get("text", ""), b))
-    return blocks
-
-
-def _insert_deed(con, deed_number, blocks, book=None, regno=None, year=None,
-                 pdf_name=None):
-    if con.execute("SELECT 1 FROM documents WHERE deed_number=%s", (deed_number,)).fetchone():
-        return False
-
-    full_text = "\n\n".join(
-        t for t in (_block_to_fulltext(tag, txt) for _, _, tag, txt, _b in blocks) if t)
-
-    doc_id = con.execute(
-        "INSERT INTO documents (deed_number, year, book_no, reg_no, pdf_file, "
-        "status, digitized_text, digitized_status) "
-        "VALUES (%s,%s,%s,%s,%s,'pending',%s,%s) RETURNING id",
-        (deed_number, year, book, regno, pdf_name,
-         full_text, "ready" if full_text else "not_started")).fetchone()["id"]
-
-    rows = []
-    for i, (pnum, order, tag, txt, block) in enumerate(blocks):
-        is_table = (tag == "table")
-        section = f"Page {pnum}" if pnum else "Document"
-        label = _pretty_tag(tag)
-        if is_table:
-            value, kind, multiline = txt.strip(), "table", True
-        else:
-            value, kind, multiline = _block_to_fulltext(tag, txt), "text", True
-        rows.append((doc_id, section, label, value, value, multiline, i, kind, tag,
-                     json.dumps(block), pnum))
-    if rows:
-        with con.cursor() as cur:
-            cur.executemany(
-                "INSERT INTO fields (document_id, section, label, ocr_value, current_value, "
-                "multiline, position, field_kind, layout_tag, src_block, page_num) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                rows)
-    return True
-
-
-def _find_json_dir_for(deed_id_name, data_dir):
-    """Find the JSON folder for a PDF by matching the deed id (regno_year_book)
-    in the folder's own name (or its parent). Strict — no borrowing another
-    deed's JSON."""
-    parsed = parse_deed_id(deed_id_name)
-    if not parsed:
-        return None
-    data = Path(data_dir)
-    for cand in data.rglob("page_001.json"):
-        folder = cand.parent
-        pinfo = parse_deed_id(folder.name) or parse_deed_id(folder.parent.name)
-        if pinfo and pinfo[:3] == parsed[:3]:
-            return folder
+def _year_from_text(v):
+    """Pull a year out of a date string. Handles 4-digit (22-May-2000,
+    26/11/2013) and 2-digit (21/8/98, 3.8.98) years."""
+    s = str(v or "")
+    m = _YEAR_RE.search(s)
+    if m:
+        return int(m.group(0))
+    m = _SHORT_DATE_RE.search(s)
+    if m:
+        yy = int(m.group(1))
+        # registry deeds: 00–30 -> 2000s, else 1900s
+        return 2000 + yy if yy <= 30 else 1900 + yy
     return None
 
 
+def _year_from_fields(fields):
+    """Pull the year out of the registration_date (fallback presentation_date),
+    checking both the English and Odia values."""
+    for fid in ("registration_date", "presentation_date"):
+        for f in fields:
+            if f.get("id") == fid:
+                for v in (f.get("english_value"), f.get("odia_text")):
+                    y = _year_from_text(v)
+                    if y:
+                        return y
+    return None
+
+SECTION_NAMES = {
+    "seller_details": "Seller",
+    "buyer_details": "Buyer",
+    "property_details": "Property",
+}
+SECTION_PLURALS = {"Seller": "Sellers", "Buyer": "Buyers", "Property": "Properties"}
+
+ATTR_LABELS = {
+    "name": "Name", "relation_name": "Relation name", "address": "Address",
+    "village": "Village", "khata": "Khata", "plot": "Plot", "area": "Area",
+}
+
+
+def _pretty_attr(attr):
+    return ATTR_LABELS.get(attr, (attr or "value").replace("_", " ").title())
+
+
+def _merge_enabled():
+    import os
+    # ON by default; set MERGE_PARTY_FIELDS=0 to keep per-item fields
+    return os.environ.get("MERGE_PARTY_FIELDS", "1").lower() not in ("0", "false", "no")
+
+
+def _build_field_rows(fields):
+    """Turn grounding fields into portal field rows.
+
+    Default: one row per grounding field (Seller 1 / Seller 2 ... sections).
+    With MERGE_PARTY_FIELDS=1: list fields (seller/buyer/property) are MERGED —
+    one row per attribute with the items' values comma-separated, under a
+    single section like "Buyers (5)". Original per-item blocks kept in
+    src_block so export can split corrections back into per-item fields.
+    Returns list of dicts: section, label, english, odia, src_block, page.
+    """
+    if not _merge_enabled():
+        rows = []
+        for f in fields:
+            section, label = _section_and_label(f)
+            rows.append({
+                "section": section, "label": label,
+                "english": f.get("english_value") or "",
+                "odia": f.get("odia_text") or "",
+                "src_block": f, "page": f.get("page"),
+            })
+        return rows
+
+    rows = []
+    groups = {}          # (id, attr) -> list of item blocks
+    group_order = []     # first-appearance order of (id, attr)
+    counts = {}          # id -> max item_index seen
+
+    for f in fields:
+        fid = f.get("id", "field")
+        attr = (f.get("attr") or "").strip()
+        idx = f.get("item_index") or 0
+        if fid in SECTION_NAMES and idx:
+            key = (fid, attr)
+            if key not in groups:
+                groups[key] = []
+                group_order.append(key)
+            groups[key].append(f)
+            counts[fid] = max(counts.get(fid, 0), idx)
+        else:
+            rows.append({
+                "section": "Deed details",
+                "label": f.get("field") or fid.replace("_", " ").title(),
+                "english": f.get("english_value") or "",
+                "odia": f.get("odia_text") or "",
+                "src_block": f,
+                "page": f.get("page"),
+            })
+
+    for (fid, attr) in group_order:
+        items = sorted(groups[(fid, attr)], key=lambda x: x.get("item_index") or 0)
+        n = counts.get(fid, len(items))
+        english = ", ".join((i.get("english_value") or "").strip() for i in items)
+        odia = ", ".join((i.get("odia_text") or "").strip() for i in items)
+        base = SECTION_NAMES[fid]
+        rows.append({
+            "section": f"{SECTION_PLURALS[base]} ({n})" if n != 1 else base,
+            "label": _pretty_attr(attr),
+            "english": english,
+            "odia": odia,
+            "src_block": {"group": True, "id": fid, "attr": attr,
+                          "items": items},
+            "page": items[0].get("page") if items else None,
+        })
+    return rows
+
+
+def _section_and_label(f):
+    fid = f.get("id", "field")
+    attr = (f.get("attr") or "").strip()
+    idx = f.get("item_index") or 0
+    if fid in SECTION_NAMES and idx:
+        section = f"{SECTION_NAMES[fid]} {idx}"
+        label = ATTR_LABELS.get(attr, attr.replace("_", " ").title() or "Value")
+    else:
+        section = "Deed details"
+        label = f.get("field") or fid.replace("_", " ").title()
+    return section, label
+
+
+def _load_ocr_text(deed_dir):
+    """Join ocr.jsonl pages (page order) into the Full text tab content."""
+    p = Path(deed_dir) / "ocr.jsonl"
+    if not p.exists():
+        return None
+    pages = []
+    for line in open(p, encoding="utf-8"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        pages.append((o.get("page", 0), o.get("text", "")))
+    pages.sort()
+    parts = [f"— Page {pg} —\n{txt}".strip() for pg, txt in pages if txt]
+    return "\n\n".join(parts) or None
+
+
+def find_pdf(data_dir, reg_no):
+    """Locate <reg_no>.pdf under data_dir (used for scan repair too)."""
+    data = Path(data_dir)
+    direct = data / str(reg_no) / f"{reg_no}.pdf"
+    if direct.exists():
+        return direct
+    for p in data.rglob(f"{reg_no}.pdf"):
+        return p
+    return None
+
+
+def load_deed(deed_dir, scans_dir="static/scans"):
+    """Load one deed folder (grounding.json [+ ocr.jsonl] [+ pdf])."""
+    deed_dir = Path(deed_dir)
+    gpath = deed_dir / "grounding.json"
+    if not gpath.exists():
+        raise SystemExit(f"No grounding.json in {deed_dir}")
+    g = json.load(open(gpath, encoding="utf-8"))
+    reg_no = str(g.get("reg_no") or deed_dir.name)
+    g.setdefault("reg_no", reg_no)
+
+    pdf_name = None
+    pdf_src = deed_dir / f"{reg_no}.pdf"
+    if pdf_src.exists():
+        Path(scans_dir).mkdir(parents=True, exist_ok=True)
+        pdf_name = f"{reg_no}.pdf"
+        shutil.copy(pdf_src, Path(scans_dir) / pdf_name)
+
+    full_text = _load_ocr_text(deed_dir)
+    con = connect()
+    try:
+        ok = _insert_from_grounding(con, g, full_text, pdf_name)
+        con.commit()
+        if ok:
+            print(f"loaded {reg_no}: pdf={'yes' if pdf_name else 'no'}, "
+                  f"ocr={'yes' if full_text else 'no'}")
+        else:
+            print(f"{reg_no} already present — skipping.")
+        return bool(ok)
+    finally:
+        con.close()
+
+
 def ingest_dir(data_dir, scans_dir="static/scans", init=True):
-    """Scan data_dir for deed PDFs and pair each with its JSON folder.
-    init=False when the caller has already run init_db() (avoids a nested
-    schema migration that would collide on table locks)."""
-    Path(scans_dir).mkdir(parents=True, exist_ok=True)
+    """Scan data_dir for deed folders (any folder containing grounding.json)."""
     if init:
         init_db()
-    con = connect()
     data = Path(data_dir)
-    pdfs = sorted(data.rglob("R*.pdf"))
-    loaded = skipped = nojson = 0
-    for pdf in pdfs:
-        parsed = parse_deed_id(pdf.stem)
-        if not parsed:
-            continue
-        regno, year, book, deed_no = parsed
-        json_dir = _find_json_dir_for(pdf.stem, data_dir)
-        if not json_dir:
-            nojson += 1
-            print(f"no JSON found for {deed_no} ({pdf.name})", flush=True)
-            continue
-        blocks = _load_pages(json_dir)
-        pdf_name = f"{regno}_{year}_{book}.pdf"
-        shutil.copy(pdf, Path(scans_dir) / pdf_name)
-        ok = _insert_deed(con, deed_no, blocks, book, regno, year, pdf_name)
-        if ok:
-            loaded += 1
-            print(f"loaded {deed_no}: {len(blocks)} blocks, pdf={pdf_name}", flush=True)
-        else:
-            skipped += 1
-    con.commit()
-    con.close()
-    print(f"\ndone: {loaded} loaded, {skipped} already present, {nojson} missing JSON")
+    gfiles = sorted(data.rglob("grounding.json"))
+    loaded = skipped = 0
+    for g in gfiles:
+        try:
+            if load_deed(g.parent, scans_dir):
+                loaded += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            print(f"failed {g.parent.name}: {e}", flush=True)
+    print(f"\ndone: {loaded} loaded, {skipped} already present")
 
 
-def load_akshar(json_dir, deed_number=None, scans_dir="static/scans"):
-    """Load a single deed from one JSON folder (dev / one-off)."""
-    init_db()
+def _insert_from_grounding(con, g, full_text, pdf_name):
+    """Shared insert used by both local and GCS paths."""
+    reg_no = str(g.get("reg_no") or "").strip()
+    if not reg_no:
+        return None
+    if con.execute("SELECT 1 FROM documents WHERE deed_number=%s",
+                   (reg_no,)).fetchone():
+        return False
+    src_meta = {k: v for k, v in g.items() if k != "fields"}
+    doc_id = con.execute(
+        "INSERT INTO documents (deed_number, deed_type, year, pdf_file, status, "
+        "digitized_text, digitized_status, src_meta) "
+        "VALUES (%s,%s,%s,%s,'pending',%s,%s,%s) RETURNING id",
+        (reg_no, g.get("deed_type"), _year_from_fields(g.get("fields", [])),
+         pdf_name, full_text,
+         "ready" if full_text else "not_started",
+         json.dumps(src_meta))).fetchone()["id"]
+    rows = []
+    for i, r in enumerate(_build_field_rows(g.get("fields", []))):
+        rows.append((doc_id, r["section"], r["label"], r["english"], r["english"],
+                     r["odia"], len(r["english"]) > 60, i, "text",
+                     (r["src_block"].get("id") if isinstance(r["src_block"], dict) else None),
+                     json.dumps(r["src_block"]), r["page"]))
+    if rows:
+        with con.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO fields (document_id, section, label, ocr_value, "
+                "current_value, odia_value, multiline, position, field_kind, "
+                "layout_tag, src_block, page_num) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", rows)
+    return True
+
+
+def _ocr_lines_to_text(raw):
+    """ocr.jsonl content (string) -> joined Full-text content."""
+    if not raw:
+        return None
+    pages = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        pages.append((o.get("page", 0), o.get("text", "")))
+    pages.sort()
+    parts = [f"— Page {pg} —\n{txt}".strip() for pg, txt in pages if txt]
+    return "\n\n".join(parts) or None
+
+
+def ingest_gcs(init=True, progress=None):
+    """Ingest every deed directly from the GCS bucket (see gcs_store.py).
+    PDFs are NOT downloaded here — they stream on first view."""
+    import gcs_store
+    if init:
+        init_db()
+    ids = gcs_store.list_deed_ids()
+    print(f"[gcs] {len(ids)} deed folders in bucket", flush=True)
     con = connect()
-    blocks = _load_pages(json_dir)
-    deed_number = deed_number or Path(json_dir).name
-    parsed = parse_deed_id(deed_number) or parse_deed_id(Path(json_dir).name)
-    kw = {}
-    if parsed:
-        kw = dict(regno=parsed[0], year=parsed[1], book=parsed[2])
-        deed_number = deed_number if "/" in str(deed_number) else parsed[3]
-    ok = _insert_deed(con, deed_number, blocks, **kw)
-    con.commit()
-    con.close()
-    print(f"{'loaded' if ok else 'already present'} {deed_number}: {len(blocks)} blocks")
+    loaded = skipped = failed = 0
+    try:
+        for n, reg_no in enumerate(ids, 1):
+            try:
+                graw = gcs_store.read_text(f"{reg_no}/grounding.json")
+                if not graw:
+                    failed += 1
+                    continue
+                g = json.loads(graw)
+                full_text = _ocr_lines_to_text(
+                    gcs_store.read_text(f"{reg_no}/ocr.jsonl"))
+                ok = _insert_from_grounding(con, g, full_text, f"{reg_no}.pdf")
+                if ok:
+                    loaded += 1
+                elif ok is False:
+                    skipped += 1
+                else:
+                    failed += 1
+                if n % 50 == 0:
+                    con.commit()
+                    print(f"[gcs] {n}/{len(ids)} processed "
+                          f"({loaded} loaded)", flush=True)
+                    if progress:
+                        progress(n, len(ids), loaded)
+            except Exception as e:
+                failed += 1
+                print(f"[gcs] failed {reg_no}: {e}", flush=True)
+        con.commit()
+    finally:
+        con.close()
+    print(f"[gcs] done: {loaded} loaded, {skipped} already present, "
+          f"{failed} failed/empty", flush=True)
+    return loaded
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("usage: python ingest_json.py <data_dir>  |  <json_folder> <deed_number>")
+        print("usage: python ingest_json.py <data_dir | deed_folder>")
         sys.exit(1)
-    arg = sys.argv[1]
-    if len(sys.argv) >= 3:
-        load_akshar(arg, sys.argv[2])
+    p = Path(sys.argv[1])
+    init_db()
+    if (p / "grounding.json").exists():
+        load_deed(p)
     else:
-        ingest_dir(arg)
+        ingest_dir(p, init=False)
+
+
+def merge_existing_party_fields(con):
+    """In-place migration: convert already-ingested per-item party fields
+    (Seller 1 / Buyer 2 ... rows) into merged comma-separated fields, WITHOUT
+    re-ingesting. Corrections are preserved (each item's current value joins
+    the merged string) and edit history is repointed to the merged field.
+    Idempotent: deeds already merged (or with no party fields) are untouched.
+    Returns number of documents migrated."""
+    import json as _json
+    rows = con.execute(
+        "SELECT id, document_id, section, label, ocr_value, current_value, "
+        "odia_value, position, page_num, src_block FROM fields "
+        "WHERE src_block IS NOT NULL ORDER BY document_id, position").fetchall()
+
+    by_doc = {}
+    for r in rows:
+        sb = r["src_block"]
+        if isinstance(sb, str):
+            sb = _json.loads(sb)
+        if not isinstance(sb, dict) or sb.get("group"):
+            continue                      # already merged
+        fid = sb.get("id")
+        idx = sb.get("item_index") or 0
+        if fid not in SECTION_NAMES or not idx:
+            continue                      # scalar field — untouched
+        key = (fid, (sb.get("attr") or "").strip())
+        by_doc.setdefault(r["document_id"], {}).setdefault(key, []).append(
+            {**dict(r), "_sb": sb, "_idx": idx})
+
+    migrated = 0
+    for doc_id, groups in by_doc.items():
+        for (fid, attr), items in groups.items():
+            items.sort(key=lambda x: x["_idx"])
+            n = max(i["_idx"] for i in items)
+            english = ", ".join((i["current_value"] or "").strip() for i in items)
+            ocr = ", ".join((i["ocr_value"] or "").strip() for i in items)
+            odia = ", ".join((i["odia_value"] or "").strip() for i in items)
+            base = SECTION_NAMES[fid]
+            section = f"{SECTION_PLURALS[base]} ({n})" if n != 1 else base
+            merged_block = {"group": True, "id": fid, "attr": attr,
+                            "items": [i["_sb"] for i in items]}
+            new_id = con.execute(
+                "INSERT INTO fields (document_id, section, label, ocr_value, "
+                "current_value, odia_value, multiline, position, field_kind, "
+                "layout_tag, src_block, page_num) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'text',%s,%s,%s) RETURNING id",
+                (doc_id, section, _pretty_attr(attr), ocr, english, odia,
+                 len(english) > 60, items[0]["position"], fid,
+                 _json.dumps(merged_block), items[0]["page_num"])).fetchone()["id"]
+            old_ids = [i["id"] for i in items]
+            con.execute("UPDATE edit_log SET field_id=%s WHERE field_id = ANY(%s)",
+                        (new_id, old_ids))
+            con.execute("DELETE FROM fields WHERE id = ANY(%s)", (old_ids,))
+        migrated += 1
+        if migrated % 100 == 0:
+            con.commit()
+            print(f"[merge] {migrated} documents migrated...", flush=True)
+    con.commit()
+    return migrated

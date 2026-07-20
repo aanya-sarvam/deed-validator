@@ -16,7 +16,7 @@
   body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
          font-size: 1rem; line-height: 1.5; background: var(--paper); color: #22262c; }
   .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
-  .odia-wrap input { font-family: "Noto Sans Oriya", system-ui, sans-serif; }
+  [lang="or"] { font-family: "Noto Sans Oriya", system-ui, sans-serif; }
   .tableblock { display: block; }
   table.edit-grid { border-collapse: collapse; width: 100%; margin: 4px 0; }
   table.edit-grid td { border: 1px solid var(--line); padding: 0; vertical-align: top; }
@@ -35,17 +35,8 @@
   .kbd-btn { font-size: 0.75rem; padding: 1px 8px; margin-left: 8px; border:1px solid var(--line);
     border-radius: 5px; background:#fff; cursor:pointer; color: var(--ink); }
   .kbd-btn:hover { background: var(--accent-soft); }
-  #odia-kbd { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
-    width: min(760px, 94vw); background: var(--card); border: 1px solid var(--line);
-    border-radius: 12px; box-shadow: 0 8px 30px rgba(20,41,66,.22); z-index: 60; padding: 10px 12px; }
-  #odia-kbd .kbd-head { display:flex; align-items:center; gap:8px; font-size:0.85rem;
-    color: var(--muted); margin-bottom: 8px; }
-  #odia-kbd .kbd-head button { font-size:0.75rem; padding:2px 10px; }
-  .kbd-keys { display:flex; flex-wrap:wrap; gap:5px; }
-  .kbd-keys button { min-width: 38px; height: 38px; font-size: 1.15rem; padding: 0 6px;
     border:1px solid var(--line); border-radius:7px; background:#fbfcfd; cursor:pointer;
     font-family:"Noto Sans Oriya", system-ui, sans-serif; }
-  .kbd-keys button:hover { background: var(--accent-soft); border-color: var(--ink); }
   .serif { font-family: Georgia, "Times New Roman", serif; }
   label { display: block; font-size: 0.8333rem; color: var(--muted); margin: 12px 0 4px; }
   input, textarea, select { width: 100%; padding: 8px 10px; border: 1px solid var(--line);
@@ -170,6 +161,15 @@
     border-color: var(--edited-border); box-shadow: 0 0 0 1px var(--edited-border); }
   .ocr-orig { font-size: 0.7667rem; color: var(--warn); margin-top: 2px; display: none; }
   .ocr-orig.show { display: block; }
+  .lblrow { display: flex; align-items: center; gap: 6px; }
+  .eye-btn { border: none; background: none; cursor: pointer; padding: 0 2px;
+    font-size: 0.85rem; opacity: 0.35; line-height: 1; }
+  .eye-btn:hover { opacity: 0.9; }
+  .in-eye { display: none; }
+  .in-eye.show { display: block; }
+  .flagnote { font-size: 0.72rem; color: var(--bad); margin-top: 2px; max-width: 220px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .flagbanner { background: #fdf3f2; border-color: #f0c8c4; }
   .edited-by { font-size: 0.7333rem; color: var(--muted); margin-top: 2px; display: none; }
   .edited-by.show { display: block; }
   textarea { resize: vertical; min-height: 54px; }
@@ -297,6 +297,17 @@
   <div id="browse" class="view">
     <h1>Records</h1>
     <div class="toolbar">
+      <div class="grp">
+        <input id="f_q" placeholder="Search reg no…" style="width:160px"
+               onkeydown="if(event.key==='Enter')runSearch(1)">
+        <button class="small" onclick="runSearch(1)">Search</button>
+      </div>
+      <div class="grp" id="assigned-grp" style="display:none">Assigned to
+        <select id="f_assigned" onchange="runSearch(1)">
+          <option value="">Anyone</option>
+          <option value="none">Unassigned</option>
+        </select>
+      </div>
       <div class="grp" id="status-grp-top">Status
         <select id="f_status" onchange="runSearch(1)">
           <option value="">All</option>
@@ -352,7 +363,7 @@
         <button id="tab-meta" class="tasktab active" onclick="showTask('meta')">Metadata</button>
         <button id="tab-text" class="tasktab" onclick="showTask('text')">Full text</button>
       </span>
-      <button class="small" onclick="toggleOdiaKbd()" title="Show/hide the Oriya virtual keyboard">⌨ Oriya keyboard</button>
+      <button class="small" id="translit-btn" onclick="toggleTranslit()" title="Type English phonetically in Odia boxes — each word converts to Odia on space (Google Input Tools)">ଅ English→Odia: On</button>
       <span class="spacer" style="flex:1"></span>
       <span class="meta" id="queuemeta"></span>
     </div>
@@ -435,16 +446,7 @@
 
 <div id="modal-root"></div>
 
-<div id="odia-kbd" style="display:none">
-  <div class="kbd-head">
-    <span>Oriya keyboard</span>
-    <span id="kbd-hint" style="display:none; color:var(--warn); font-size:0.78rem">Click a field first, then type</span>
-    <span class="spacer" style="flex:1"></span>
-    <button type="button" onmousedown="event.preventDefault();odiaBackspace()">⌫ back</button>
-    <button type="button" onclick="document.getElementById('odia-kbd').style.display='none'">✕ close</button>
-  </div>
-  <div id="odia-keys" class="kbd-keys"></div>
-</div>
+
 
 <script>
 let TOKEN = localStorage.getItem('deed_token') || '';
@@ -595,7 +597,21 @@ async function runSearch(page) {
   if (ROLE === 'admin' && EXPERTS.length === 0) {
     try { EXPERTS = (await api('/users')).filter(u => u.role === 'expert'); } catch (e) {}
   }
+  // admin: expose + populate the assigned-to filter
+  if (ROLE === 'admin') {
+    const ag = $('assigned-grp'), sel = $('f_assigned');
+    if (ag) ag.style.display = '';
+    if (sel && sel.options.length <= 2 && EXPERTS.length) {
+      for (const e of EXPERTS) {
+        const o = document.createElement('option');
+        o.value = e.id; o.textContent = e.full_name || e.username;
+        sel.appendChild(o);
+      }
+    }
+  }
   const p = new URLSearchParams({
+    q: ($('f_q') ? $('f_q').value : ''),
+    assigned: ($('f_assigned') ? $('f_assigned').value : ''),
     status: $('f_status').value, page: PAGE, per_page: $('per_page').value });
   const d = await api('/search?' + p);
 
@@ -616,7 +632,9 @@ async function runSearch(page) {
     tr.style.cursor = 'pointer';
     tr.title = 'Click to open for validation';
     tr.onclick = () => openDoc(r.id);   // #5: row click → validate mode
-    const statusCell = `<span class="chip ${r.status}"><span class="dot"></span>${STATUS_LABEL[r.status] || r.status || 'Pending'}</span>`;
+    const statusCell = `<span class="chip ${r.status}"><span class="dot"></span>${STATUS_LABEL[r.status] || r.status || 'Pending'}</span>`
+      + (r.status === 'flagged' && r.flag_reason
+         ? `<div class="flagnote" title="${r.flag_reason.replace(/"/g,'&quot;')}">⚑ ${r.flag_reason}</div>` : '');
     const editedBy = r.last_edited_name || '—';
     const editedAt = r.last_edited_at || '—';
     let cells = `<td class="mono">${docNo}</td>
@@ -764,6 +782,7 @@ async function loadDigitized() {
     editor.style.display = 'block';
     $('fulltext').value = d.text;
     $('fulltext').disabled = !(DOC && DOC.editable);
+    attachTranslit($('fulltext'));
     $('textsave').textContent = d.status === 'corrected' ? 'Corrected' : 'Loaded — not yet corrected';
   } else {
     editor.style.display = 'none';
@@ -784,7 +803,8 @@ function renderDoc(d) {
   showTask('meta');
   const doc = d.document, editable = !!d.editable;
   showView('validate');
-  $('deedtitle').textContent = `Deed ${doc.deed_number} · ${doc.deed_type} · ${doc.sr_office}`;
+  $('deedtitle').textContent = 'Deed ' + [doc.deed_number, doc.deed_type, doc.year, doc.sr_office]
+    .filter(x => x !== null && x !== undefined && x !== '').join(' · ');
   const pill = $('statuspill');
   pill.className = 'chip ' + doc.status;
   pill.innerHTML = `<span class="dot"></span>${STATUS_LABEL[doc.status] || doc.status || 'Pending'}`;
@@ -808,6 +828,11 @@ function renderDoc(d) {
   } else { $('pdfframe').style.display = 'none'; $('nopdf').style.display = 'flex'; }
 
   const pane = $('formpane'); pane.innerHTML = '';
+  if (editable && doc.status === 'flagged') {
+    const fb = document.createElement('div'); fb.className = 'robanner flagbanner';
+    fb.textContent = `⚑ Flagged: ${doc.flag_reason || 'no reason given'} — correct and Approve, or Unflag to return it to review.`;
+    pane.appendChild(fb);
+  }
   if (!editable) {
     const b = document.createElement('div'); b.className = 'robanner';
     b.textContent = doc.status === 'flagged'
@@ -847,15 +872,17 @@ function renderDoc(d) {
       continue;
     }
     const row = document.createElement('div'); row.className = 'frow';
-    const blockLabel = f.layout_tag ? prettyTag(f.layout_tag) : f.label;
+    const blockLabel = f.label;
     const tag = f.multiline ? 'textarea' : 'input';
-    row.innerHTML = `<label for="f${f.id}">${blockLabel}</label>
-      <${tag} id="f${f.id}" data-fid="${f.id}" ${editable ? '' : 'disabled'}></${tag}>
-      <div class="ocr-orig" id="o${f.id}"></div>
-      <div class="odia-wrap">
-        <label style="margin-top:6px">${blockLabel} (Odia)</label>
-        <input id="f${f.id}_odia" data-fid-odia="${f.id}" lang="or" ${editable ? '' : 'disabled'}>
+    const otag = (f.multiline || (f.odia_value || '').length > 60) ? 'textarea' : 'input';
+    row.innerHTML = `<div class="lblrow"><label for="f${f.id}_odia">${blockLabel} (Odia)</label>
+        <button type="button" class="eye-btn" title="Show English / original extracted values" onclick="toggleOrig(${f.id})">👁</button></div>
+      <${otag} id="f${f.id}_odia" data-fid-odia="${f.id}" lang="or" ${editable ? '' : 'disabled'}></${otag}>
+      <div class="eng-wrap in-eye" id="ew${f.id}">
+        <label style="margin-top:6px">${blockLabel} (English)</label>
+        <${tag} id="f${f.id}" data-fid="${f.id}" ${editable ? '' : 'disabled'}></${tag}>
       </div>
+      <div class="ocr-orig" id="o${f.id}"></div>
       <div class="edited-by" id="eb${f.id}"></div>`;
     secEl.appendChild(row);
     const el = row.querySelector('[data-fid]');
@@ -863,9 +890,27 @@ function renderDoc(d) {
     markChanged(el, f);
     const odiaEl = row.querySelector('[data-fid-odia]');
     odiaEl.value = f.odia_value || '';
+    // hidden originals panel (revealed by the eye icon): original extracted
+    // values + model hint (confidence / not-found note / romanization)
+    const sb = f.src_block || {};
+    const oEl = row.querySelector('.ocr-orig');
+    if (oEl) {
+      const parts = [];
+      parts.push(`Original: ${f.ocr_value || '(empty)'}`);
+      if (sb.odia_text !== undefined) parts.push(`Odia: ${sb.odia_text || '(empty)'}`);
+      let hint = '';
+      if (sb.found === false) hint = '⚠ not located by model' + (sb.notes ? ' — ' + sb.notes : '');
+      else {
+        if (sb.confidence != null) hint = `confidence ${sb.confidence}`;
+        if (sb.latin_readback) hint += (hint ? ' · ' : '') + sb.latin_readback;
+      }
+      if (hint) parts.push(hint);
+      oEl.textContent = parts.join('   ·   ');
+    }
     if (editable) {
       el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
       odiaEl.addEventListener('focus', () => { ODIA_TARGET = odiaEl.id; hideKbdHint(); });
+      attachTranslit(odiaEl);
       el.addEventListener('change', () => saveField(el, f));
       el.addEventListener('input', () => { $('savestate').textContent = 'Editing…'; });
       odiaEl.addEventListener('change', () => saveField(el, f, odiaEl.value));
@@ -873,7 +918,7 @@ function renderDoc(d) {
     }
   }
   pane.scrollTop = 0;
-  if (editable) { const first = pane.querySelector('[data-fid]'); if (first) first.focus(); }
+  if (editable) { const first = pane.querySelector('[data-fid-odia]'); if (first) first.focus(); }
 }
 
 function prettyTag(t) {
@@ -966,64 +1011,56 @@ async function saveTableField(f, rows) {
 }
 
 function markChanged(el, f) {
-  const changed = el.value !== f.ocr_value;
-  el.classList.toggle('changed', changed);
-  const o = $('o' + f.id);
-  o.textContent = changed ? `OCR read: ${f.ocr_value || '(empty)'}` : '';
-  o.classList.toggle('show', changed);
+  // highlight edited fields; the original value lives behind the eye icon
+  el.classList.toggle('changed', el.value !== f.ocr_value);
+}
+
+function toggleOrig(fid) {
+  const o = $('o' + fid);
+  if (o) o.classList.toggle('show');
+  const ew = $('ew' + fid);
+  if (ew) ew.classList.toggle('show');
 }
 
 /* ---------- Odia virtual keyboard (1) + translate (2) ---------- */
 let ODIA_TARGET = null;
-const ODIA_KEYS = [
-  'ଅ','ଆ','ଇ','ଈ','ଉ','ଊ','ଋ','ଏ','ଐ','ଓ','ଔ',
-  'କ','ଖ','ଗ','ଘ','ଙ','ଚ','ଛ','ଜ','ଝ','ଞ',
-  'ଟ','ଠ','ଡ','ଢ','ଣ','ତ','ଥ','ଦ','ଧ','ନ',
-  'ପ','ଫ','ବ','ଭ','ମ','ଯ','ର','ଲ','ଳ','ଵ',
-  'ଶ','ଷ','ସ','ହ','କ୍ଷ','ଜ୍ଞ',
-  'ା','ି','ୀ','ୁ','ୂ','ୃ','େ','ୈ','ୋ','ୌ','୍','ଂ','ଃ','ଁ',
-  '୦','୧','୨','୩','୪','୫','୬','୭','୮','୯','଼','ଽ',' '
-];
-function hideKbdHint() { const h = $('kbd-hint'); if (h) h.style.display = 'none'; }
-function toggleBottomFilter() {
-  const opts = $('bottom-filter-opts');
-  const showing = opts.style.display === 'block';
-  opts.style.display = showing ? 'none' : 'block';
-  $('filter-toggle').textContent = showing ? 'Show other records ▾' : 'Hide ▴';
+/* ---------- English -> Odia transliteration (Google Input Tools) ---------- */
+let TRANSLIT_ON = true;
+function hideKbdHint() {}
+function toggleTranslit() {
+  TRANSLIT_ON = !TRANSLIT_ON;
+  const b = $('translit-btn');
+  if (b) b.textContent = 'ଅ English→Odia: ' + (TRANSLIT_ON ? 'On' : 'Off');
 }
-function toggleOdiaKbd() {
-  const kb = $('odia-kbd');
-  const showing = kb.style.display === 'block';
-  if (!kb.dataset.built) {
-    kb.querySelector('#odia-keys').innerHTML = ODIA_KEYS.map(k =>
-      `<button type="button" data-ch="${k === ' ' ? 'SPACE' : k}">${k === ' ' ? 'space' : k}</button>`).join('');
-    // insert on mousedown + preventDefault so the focused field keeps focus/selection
-    kb.querySelector('#odia-keys').addEventListener('mousedown', ev => {
-      const b = ev.target.closest('button'); if (!b) return;
-      ev.preventDefault();
-      const ch = b.getAttribute('data-ch');
-      odiaType(ch === 'SPACE' ? ' ' : ch);
-    });
-    kb.dataset.built = '1';
-  }
-  kb.style.display = showing ? 'none' : 'block';
+async function translitWord(w) {
+  try {
+    const d = await api('/transliterate?text=' + encodeURIComponent(w));
+    return (d.suggestions && d.suggestions[0]) || null;
+  } catch (e) { return null; }
 }
-function odiaType(ch) {
-  const el = ODIA_TARGET ? $(ODIA_TARGET) : null;
-  if (!el) { const h = $('kbd-hint'); if (h) h.style.display = 'inline'; return; }
-  const s = el.selectionStart ?? el.value.length, e = el.selectionEnd ?? el.value.length;
-  el.value = el.value.slice(0, s) + ch + el.value.slice(e);
-  const pos = s + ch.length;
+function attachTranslit(el) {
+  if (el.dataset.translit) return;
+  el.dataset.translit = '1';
+  el.addEventListener('keydown', ev => translitKey(ev, el));
+}
+async function translitKey(ev, el) {
+  if (!TRANSLIT_ON || el.disabled) return;
+  if (ev.key !== ' ' && ev.key !== 'Enter') return;
+  const caret = el.selectionStart ?? el.value.length;
+  const m = el.value.slice(0, caret).match(/[A-Za-z]+$/);
+  if (!m) return;                      // no latin word before caret
+  ev.preventDefault();
+  const word = m[0], start = caret - word.length;
+  const od = await translitWord(word);
+  const tail = ev.key === ' ' ? ' ' : (el.tagName === 'TEXTAREA' ? '\n' : '');
+  const rep = (od || word) + tail;
+  el.value = el.value.slice(0, start) + rep + el.value.slice(caret);
+  const pos = start + rep.length;
   try { el.setSelectionRange(pos, pos); } catch (_) {}
-  el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change'));
+  el.dispatchEvent(new Event('input'));
+  el.dispatchEvent(new Event('change'));
 }
-function odiaBackspace() {
-  const el = ODIA_TARGET ? $(ODIA_TARGET) : null; if (!el) return;
-  const s = el.selectionStart ?? el.value.length, e = el.selectionEnd ?? el.value.length;
-  if (s === e && s > 0) { el.value = el.value.slice(0, s-1) + el.value.slice(e); try { el.setSelectionRange(s-1, s-1); } catch(_){} }
-  else if (s !== e) { el.value = el.value.slice(0, s) + el.value.slice(e); try { el.setSelectionRange(s, s); } catch(_){} }
-  el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change'));
-}
+
 async function saveField(el, f, odiaVal) {
   dirty++; $('savestate').textContent = 'Saving…';
   try {

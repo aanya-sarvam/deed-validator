@@ -115,6 +115,9 @@ ALTER TABLE fields ADD COLUMN IF NOT EXISTS layout_tag TEXT;
 -- in exactly the same shape as the input, with only the text replaced.
 ALTER TABLE fields ADD COLUMN IF NOT EXISTS src_block JSONB;
 ALTER TABLE fields ADD COLUMN IF NOT EXISTS page_num INT;
+-- Original grounding.json header (reg_no, book_label, deed_type, chunks...)
+-- so corrected output can be exported in exactly the input shape.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS src_meta JSONB;
 """
 
 SEED_USERS = [

@@ -5,6 +5,7 @@ Env:  DATABASE_URL=postgresql://deeds:deeds@localhost:5432/deeds
 Seed logins (rotate in prod): expert1..expert3 / admin, password sarvam123
 """
 import secrets
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, Depends, HTTPException, Query
@@ -35,10 +36,12 @@ def _repair_scans(con):
     missing = [d for d in docs if not (scans / d["pdf_file"]).exists()]
     if not missing or not Path("data").exists():
         return
-    from ingest import find_pdf
+    from ingest_json import find_pdf
     repaired = 0
     for d in missing:
-        src = find_pdf("data", d["book_no"], d["reg_no"], d["year"])
+        # deed_number IS the reg_no in the grounding format; pdf named <reg_no>.pdf
+        reg = d["pdf_file"].rsplit(".", 1)[0]
+        src = find_pdf("data", reg)
         if src:
             shutil.copy(src, scans / d["pdf_file"])
             repaired += 1
@@ -88,35 +91,65 @@ def _auto_ingest():
             try:
                 n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
                 if n:
+                    # backfill: populate year from the registration/presentation
+                    # date fields (English or Odia value, 2- or 4-digit year) for
+                    # deeds still missing one. Idempotent.
+                    from ingest_json import _year_from_text
+                    rows = con.execute(
+                        "SELECT f.document_id, f.layout_tag, f.current_value, f.odia_value "
+                        "FROM fields f JOIN documents d ON d.id = f.document_id "
+                        "WHERE d.year IS NULL "
+                        "  AND f.layout_tag IN ('registration_date','presentation_date') "
+                        "ORDER BY f.document_id, (f.layout_tag='registration_date') DESC"
+                    ).fetchall()
+                    years = {}
+                    for r in rows:
+                        if r["document_id"] in years:
+                            continue
+                        y = _year_from_text(r["current_value"]) or _year_from_text(r["odia_value"])
+                        if y:
+                            years[r["document_id"]] = y
+                    for doc_id, y in years.items():
+                        con.execute("UPDATE documents SET year=%s WHERE id=%s", (y, doc_id))
+                    con.commit()
+                    if years:
+                        print(f"[startup] backfilled year on {len(years)} documents", flush=True)
+                    # in-place migration: merge per-item party fields into
+                    # comma-separated fields (idempotent, preserves corrections)
+                    from ingest_json import merge_existing_party_fields, _merge_enabled
+                    if _merge_enabled():
+                        m = merge_existing_party_fields(con)
+                        if m:
+                            print(f"[startup] merged party fields on {m} documents", flush=True)
                     _ingest_status.update(state="done", documents=n, detail="already loaded")
                     _repair_scans(con)
                     print(f"[startup] already loaded — {n} documents", flush=True)
                     return
 
-                json_pages = glob.glob("data/**/page_*.json", recursive=True)
-                pdfs = glob.glob("data/**/R*.pdf", recursive=True)
-                if json_pages and pdfs:
-                    from ingest_json import ingest_dir
-                    _ingest_status.update(state="running", detail=f"{len(pdfs)} PDF+JSON deeds")
-                    print("[startup] auto-ingesting PDF+JSON deeds from data/", flush=True)
-                    ingest_dir("data", init=False)
+                import gcs_store
+                if gcs_store.enabled():
+                    from ingest_json import ingest_gcs
+                    _ingest_status.update(state="running", detail="reading from GCS bucket")
+                    print("[startup] auto-ingesting from GCS bucket", flush=True)
+                    ingest_gcs(init=False)
                     n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
-                    _ingest_status.update(state="done", documents=n, detail="PDF+JSON")
-                    print(f"[startup] JSON ingest complete — {n} documents", flush=True)
+                    _ingest_status.update(state="done", documents=n, detail="GCS")
+                    print(f"[startup] GCS ingest complete — {n} documents", flush=True)
                     return
 
-                found = sorted(glob.glob("data/**/*.xlsx", recursive=True))
-                if not found:
-                    _ingest_status.update(state="error", detail="no PDF+JSON or .xlsx under data/")
-                    print("[startup] ERROR: no PDF+JSON or Excel found under data/", flush=True)
+                groundings = glob.glob("data/**/grounding.json", recursive=True)
+                if groundings:
+                    from ingest_json import ingest_dir
+                    _ingest_status.update(state="running", detail=f"{len(groundings)} deeds")
+                    print(f"[startup] auto-ingesting {len(groundings)} grounding-format deed(s) from data/", flush=True)
+                    ingest_dir("data", init=False)
+                    n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+                    _ingest_status.update(state="done", documents=n, detail="grounding+ocr")
+                    print(f"[startup] ingest complete — {n} documents", flush=True)
                     return
-                from ingest import ingest as run_ingest
-                _ingest_status.update(state="running", detail=found[0])
-                print(f"[startup] auto-ingesting {found[0]}", flush=True)
-                run_ingest(found[0], str(Path(found[0]).parent))
-                n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
-                _ingest_status.update(state="done", documents=n, detail=found[0])
-                print(f"[startup] ingest complete — {n} documents", flush=True)
+
+                _ingest_status.update(state="error", detail="no deed folders (grounding.json) under data/")
+                print("[startup] ERROR: no grounding.json deed folders found under data/", flush=True)
             finally:
                 con.execute("SELECT pg_advisory_unlock(424242)")
     except Exception as e:
@@ -157,7 +190,7 @@ def ingest_status():
     except Exception as e:
         docs = f"db error: {e}"
     return {**_ingest_status, "documents_now": docs,
-            "xlsx_found": sorted(glob.glob("data/**/*.xlsx", recursive=True)),
+            "deeds_found": len(glob.glob("data/**/grounding.json", recursive=True)),
             "data_dir_exists": os.path.isdir("data"),
             "cwd": os.getcwd()}
 
@@ -287,7 +320,7 @@ def doc_payload(con, doc_id):
         raise HTTPException(404, "Document not found")
     fields = con.execute(
         "SELECT id, section, label, ocr_value, current_value, odia_value, multiline, "
-        "field_kind, layout_tag "
+        "field_kind, layout_tag, src_block "
         "FROM fields WHERE document_id = %s ORDER BY position", (doc_id,)).fetchall()
     remaining = con.execute(
         "SELECT COUNT(*) c FROM documents WHERE status IN ('pending','in_review')"
@@ -392,16 +425,46 @@ def get_document(doc_id: int, user=Depends(current_user)):
         return doc_payload(con, doc_id)
 
 
+@app.get("/api/transliterate")
+def transliterate(text: str, user=Depends(current_user)):
+    """English (phonetic) -> Odia via Google Input Tools. Proxied server-side
+    so the browser needs no extension and no cross-origin access."""
+    import urllib.parse
+    import urllib.request
+    text = text.strip()
+    if not text or len(text) > 80:
+        return {"suggestions": []}
+    url = "https://inputtools.google.com/request?" + urllib.parse.urlencode(
+        {"itc": "or-t-i0-und", "num": 4, "text": text})
+    try:
+        r = json.loads(urllib.request.urlopen(url, timeout=5).read())
+        if r[0] == "SUCCESS" and r[1]:
+            return {"suggestions": r[1][0][1]}
+    except Exception:
+        pass
+    return {"suggestions": []}
+
+
 @app.get("/api/documents/{doc_id}/pdf")
 def get_pdf(doc_id: int, user=Depends(current_user)):
     with connect() as con:
-        doc = con.execute("SELECT pdf_file FROM documents WHERE id = %s",
+        doc = con.execute("SELECT deed_number, pdf_file FROM documents WHERE id = %s",
                           (doc_id,)).fetchone()
     if not doc or not doc["pdf_file"]:
         raise HTTPException(404, "No scan attached to this deed")
     path = Path("static/scans") / doc["pdf_file"]
     if not path.exists():
-        raise HTTPException(404, "Scan file missing on disk")
+        # stream from GCS on first view (and cache locally) if configured
+        import gcs_store
+        if gcs_store.enabled():
+            try:
+                fetched = gcs_store.fetch_pdf(doc["deed_number"])
+                if fetched:
+                    path = fetched
+            except Exception as e:
+                raise HTTPException(502, f"Could not fetch scan from GCS: {e}")
+    if not path.exists():
+        raise HTTPException(404, "Scan file missing")
     return FileResponse(path, media_type="application/pdf")
 
 
@@ -449,7 +512,7 @@ PARTY_NAME_SQL = ("(SELECT string_agg(current_value, E'\\n' ORDER BY position) F
 
 @app.get("/api/search")
 def search(q: str = "", field: str = "deed_number", status: str = "",
-           sort_by: str = "", sort_order: str = "asc",
+           assigned: str = "", sort_by: str = "", sort_order: str = "asc",
            page: int = 1, per_page: int = 10, user=Depends(current_user)):
     where, params = [], []
     q = q.strip()
@@ -466,6 +529,12 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
             where.append("d.book_no = %s"); params.append(int(q))
     if status:
         where.append("d.status = %s"); params.append(status)
+    # assigned-to filter (admin/monitor views): expert id, or 'none' = unassigned
+    if assigned and user["role"] in ("admin", "monitor"):
+        if assigned == "none":
+            where.append("d.assigned_to IS NULL")
+        elif assigned.isdigit():
+            where.append("d.assigned_to = %s"); params.append(int(assigned))
     # Role-scoped visibility:
     #  - experts see only deeds assigned to them
     #  - monitors see the review pool + anything they've reviewed
@@ -498,7 +567,7 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
             f"SELECT COUNT(*) c FROM documents d {wsql}", params).fetchone()["c"]
         rows = con.execute(
             f"SELECT d.id, d.deed_number, d.deed_type, d.year, d.book_no, d.sr_office, "
-            f"d.status, (d.pdf_file IS NOT NULL) has_pdf, u.full_name locked_name, "
+            f"d.status, d.flag_reason, (d.pdf_file IS NOT NULL) has_pdf, u.full_name locked_name, "
             f"a.full_name assigned_name, a.id assigned_id, "
             f"le.full_name last_edited_name, to_char(d.last_edited_at, 'DD Mon HH24:MI') last_edited_at, "
             f"{PARTY_NAME_SQL} first_party, {PARTY_NAME_SQL} second_party "

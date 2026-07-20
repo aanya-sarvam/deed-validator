@@ -1,6 +1,5 @@
 fastapi
 uvicorn
-pandas
-openpyxl
 psycopg[binary]
 bcrypt
+google-cloud-storage

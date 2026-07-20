@@ -1,80 +1,104 @@
 """
-export_json.py — export corrected deeds as JSON, in the SAME per-page block
-shape that Akshar produced on input. Only the block `text` is replaced with
-the expert's corrected value; block_id / coordinates / confidence / layout_tag
-/ reading_order are preserved exactly. Output is a ZIP:
+export_json.py — export corrected deeds as grounding.json, in the SAME shape
+as the input. Each field keeps its original id/attr/item_index/page/confidence
+etc.; only english_value and odia_text are replaced with the experts'
+corrected values. The corrected full text (from the Full text tab) is included
+as fulltext.txt. Output ZIP mirrors the input layout (no PDFs):
 
-    <deed>/metadata/page_001.json
-    <deed>/metadata/page_002.json
-    ...
-
-one folder per deed, mirroring the input layout (no PDFs).
+    <reg_no>/grounding.json
+    <reg_no>/fulltext.txt
 """
 
 import io
 import json
 import zipfile
-from collections import defaultdict
 
 from db import connect
 
 
-def _corrected_blocks_by_deed():
-    """Return {deed_number: {page_num: [block, ...]}} with corrected text."""
-    with connect() as con:
-        rows = con.execute(
-            "SELECT d.deed_number, f.current_value, f.field_kind, f.src_block, "
-            "       f.page_num, f.position "
-            "FROM fields f JOIN documents d ON d.id = f.document_id "
-            "WHERE f.src_block IS NOT NULL "
-            "ORDER BY d.deed_number, f.position"
-        ).fetchall()
+def _split_csv(s):
+    return [p.strip() for p in (s or "").split(",")]
 
-    deeds = defaultdict(lambda: defaultdict(list))
+
+def _expand_group(block, english, odia):
+    """A merged group field back into per-item grounding fields. The corrected
+    comma-separated string is authoritative: item count follows the splits."""
+    items = block.get("items", [])
+    evals = _split_csv(english)
+    ovals = _split_csv(odia)
+    n = max(len(evals), len(ovals), 1)
+    out = []
+    for i in range(n):
+        base = items[i] if i < len(items) else dict(items[-1] if items else {},
+                                                    found=False, notes="added by expert",
+                                                    confidence=None, page=None)
+        b = dict(base)
+        b["item_index"] = i + 1
+        b["english_value"] = evals[i] if i < len(evals) else ""
+        b["odia_text"] = ovals[i] if i < len(ovals) else ""
+        out.append(b)
+    return out
+
+
+def _corrected_grounding(con, doc_id):
+    doc = con.execute(
+        "SELECT deed_number, src_meta, digitized_text FROM documents WHERE id=%s",
+        (doc_id,)).fetchone()
+    if not doc:
+        return None, None, None
+    meta = doc["src_meta"] or {}
+    if isinstance(meta, str):
+        meta = json.loads(meta)
+    rows = con.execute(
+        "SELECT current_value, odia_value, src_block FROM fields "
+        "WHERE document_id=%s AND src_block IS NOT NULL ORDER BY position",
+        (doc_id,)).fetchall()
+    fields = []
     for r in rows:
-        block = r["src_block"]  # original Akshar block (JSONB -> dict)
+        block = r["src_block"]
         if isinstance(block, str):
             block = json.loads(block)
-        # replace only the text with the corrected value
-        block = dict(block)
-        block["text"] = r["current_value"] or ""
-        page = r["page_num"] or block.get("page_num") or 0
-        deeds[r["deed_number"]][page].append(block)
-    return deeds
+        if isinstance(block, dict) and block.get("group"):
+            fields.extend(_expand_group(block, r["current_value"], r["odia_value"]))
+        else:
+            block = dict(block)
+            block["english_value"] = r["current_value"] or ""
+            block["odia_text"] = r["odia_value"] or ""
+            fields.append(block)
+    grounding = {**meta, "fields": fields}
+    return doc["deed_number"], grounding, doc["digitized_text"]
 
 
 def build_export_zip() -> io.BytesIO:
-    """Build a ZIP of corrected per-page JSON, mirroring the Akshar input."""
-    deeds = _corrected_blocks_by_deed()
+    """Corrected grounding.json (+ corrected full text) for every deed."""
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for deed_number, pages in deeds.items():
-            # deed folder name from the deed number, e.g. 1334/1986/B1 -> 1334_1986_B1
-            safe = deed_number.replace("/", "_")
-            for page_num, blocks in sorted(pages.items()):
-                # sort blocks by their original reading order
-                blocks_sorted = sorted(blocks, key=lambda b: b.get("reading_order", 0))
-                page_obj = {
-                    "page_num": page_num,
-                    "blocks": blocks_sorted,
-                }
-                fname = f"{safe}/metadata/page_{page_num:03d}.json"
-                zf.writestr(fname, json.dumps(page_obj, ensure_ascii=False, indent=2))
+    with connect() as con:
+        ids = [r["id"] for r in
+               con.execute("SELECT id FROM documents ORDER BY deed_number").fetchall()]
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for doc_id in ids:
+                reg_no, grounding, fulltext = _corrected_grounding(con, doc_id)
+                if not reg_no:
+                    continue
+                zf.writestr(f"{reg_no}/grounding.json",
+                            json.dumps(grounding, ensure_ascii=False, indent=2))
+                if fulltext:
+                    zf.writestr(f"{reg_no}/fulltext.txt", fulltext)
     buf.seek(0)
     return buf
 
 
 def build_single_deed_json(deed_number) -> io.BytesIO:
-    """Corrected JSON for one deed, as a ZIP of its per-page files."""
-    deeds = _corrected_blocks_by_deed()
-    pages = deeds.get(deed_number, {})
     buf = io.BytesIO()
-    safe = deed_number.replace("/", "_")
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for page_num, blocks in sorted(pages.items()):
-            blocks_sorted = sorted(blocks, key=lambda b: b.get("reading_order", 0))
-            page_obj = {"page_num": page_num, "blocks": blocks_sorted}
-            zf.writestr(f"{safe}/metadata/page_{page_num:03d}.json",
-                        json.dumps(page_obj, ensure_ascii=False, indent=2))
+    with connect() as con:
+        d = con.execute("SELECT id FROM documents WHERE deed_number=%s",
+                        (deed_number,)).fetchone()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            if d:
+                reg_no, grounding, fulltext = _corrected_grounding(con, d["id"])
+                zf.writestr(f"{reg_no}/grounding.json",
+                            json.dumps(grounding, ensure_ascii=False, indent=2))
+                if fulltext:
+                    zf.writestr(f"{reg_no}/fulltext.txt", fulltext)
     buf.seek(0)
     return buf
