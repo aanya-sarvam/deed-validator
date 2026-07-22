@@ -186,6 +186,12 @@
   .flagbanner { background: #fdf3f2; border-color: #f0c8c4; }
   .edited-by { font-size: 0.7333rem; color: var(--muted); margin-top: 2px; display: none; }
   .edited-by.show { display: block; }
+  .party-group { margin-top: 4px; }
+  .party-item { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px 10px;
+    margin-top: 8px; }
+  .party-item-title { font-size: 0.7667rem; font-weight: 500; color: var(--ink);
+    margin-bottom: 2px; }
+  .party-add-btn { margin-top: 8px; }
   textarea { resize: vertical; min-height: 54px; }
   #pdfpane .bar { padding: 6px 14px; font-size: 0.8333rem; color: var(--muted);
                   border-bottom: 1px solid var(--line); background: var(--card); }
@@ -885,6 +891,11 @@ function renderDoc(d) {
       renderTableField(secEl, f, editable);
       continue;
     }
+    const sb0 = f.src_block || {};
+    if (sb0.group === true && PARTY_NOUNS[sb0.id]) {
+      renderPartyGroup(secEl, f, editable);
+      continue;
+    }
     const row = document.createElement('div'); row.className = 'frow';
     const blockLabel = f.label;
     const tag = f.multiline ? 'textarea' : 'input';
@@ -1036,6 +1047,77 @@ function toggleOrig(fid) {
   if (ew) ew.classList.toggle('show');
 }
 
+/* ---------- Buyer / Seller / Property: one row per person/item ----------
+   Storage is unchanged: still one comma-joined value + odia string per
+   field (same as before, same as what export_json.py expects) — this only
+   changes how it's split apart for display and rejoined on save. */
+const PARTY_NOUNS = { seller_details: 'Seller', buyer_details: 'Buyer', property_details: 'Property' };
+
+function splitCsv(s) { return (s || '').split(',').map(x => x.trim()); }
+function escapeAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
+
+function renderPartyGroup(secEl, f, editable) {
+  const noun = PARTY_NOUNS[f.src_block.id];
+  let engArr = splitCsv(f.current_value);
+  let odiaArr = splitCsv(f.odia_value);
+  const wrap = document.createElement('div'); wrap.className = 'party-group';
+  secEl.appendChild(wrap);
+
+  function build() {
+    const n = Math.max(engArr.length, odiaArr.length, 1);
+    wrap.innerHTML = '';
+    for (let i = 0; i < n; i++) {
+      const fid = `${f.id}_${i}`;
+      const item = document.createElement('div'); item.className = 'party-item';
+      item.innerHTML = `<div class="party-item-title">${noun} ${i + 1}</div>
+        <div class="lblrow"><label for="${fid}_odia">${f.label} (Odia)</label>
+          <button type="button" class="eye-btn" title="Show English / original extracted values" onclick="toggleOrig('${fid}')">👁</button></div>
+        <input id="${fid}_odia" data-party-odia="${i}" lang="or" value="${escapeAttr(odiaArr[i])}" ${editable ? '' : 'disabled'}>
+        <div class="eng-wrap in-eye" id="ew${fid}">
+          <label style="margin-top:6px">${f.label} (English)</label>
+          <input id="${fid}" data-party-eng="${i}" value="${escapeAttr(engArr[i])}" ${editable ? '' : 'disabled'}>
+        </div>`;
+      wrap.appendChild(item);
+    }
+    if (editable) {
+      wrap.querySelectorAll('[data-party-odia]').forEach(el => {
+        attachTranslit(el);
+        el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
+        el.addEventListener('input', () => { odiaArr[+el.dataset.partyOdia] = el.value; $('savestate').textContent = 'Editing…'; });
+        el.addEventListener('change', savePartyField);
+      });
+      wrap.querySelectorAll('[data-party-eng]').forEach(el => {
+        el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
+        el.addEventListener('input', () => { engArr[+el.dataset.partyEng] = el.value; $('savestate').textContent = 'Editing…'; });
+        el.addEventListener('change', savePartyField);
+      });
+    }
+  }
+
+  async function savePartyField() {
+    const value = engArr.join(', '), odia = odiaArr.join(', ');
+    dirty++; $('savestate').textContent = 'Saving…';
+    try {
+      await api(`/documents/${DOC.document.id}/fields/${f.id}`,
+        { method: 'PATCH', body: JSON.stringify({ value, odia }) });
+      f.current_value = value; f.odia_value = odia;
+      const eb = $('eb' + f.id);
+      if (eb) { eb.textContent = `edited by you · just now`; eb.classList.add('show'); }
+      $('savestate').textContent = 'All changes saved';
+    } catch (e) { $('savestate').textContent = 'Save failed: ' + e.message; }
+    finally { dirty--; }
+  }
+
+  build();
+  if (editable) {
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button'; addBtn.className = 'small party-add-btn';
+    addBtn.textContent = `+ Add ${noun.toLowerCase()}`;
+    addBtn.onclick = () => { engArr.push(''); odiaArr.push(''); build(); };
+    secEl.appendChild(addBtn);
+  }
+}
+
 /* ---------- Odia virtual keyboard (1) + translate (2) ---------- */
 let ODIA_TARGET = null;
 /* ---------- English -> Odia transliteration (Google Input Tools) ---------- */
@@ -1092,9 +1174,20 @@ function renderTranslitPop() {
 
 function currentLatinWord(el) {
   const caret = el.selectionStart ?? el.value.length;
-  const m = el.value.slice(0, caret).match(/[A-Za-z]+$/);
-  return m ? { word: m[0], start: caret - m[0].length, end: caret } : null;
+  const s = el.value.slice(0, caret);
+  let m = s.match(/[A-Za-z]+$/);
+  if (m) return { word: m[0], start: caret - m[0].length, end: caret, kind: 'alpha' };
+  m = s.match(/[0-9]+$/);
+  if (m) return { word: m[0], start: caret - m[0].length, end: caret, kind: 'digit' };
+  return null;
 }
+const ODIA_DIGITS = ['\u0b66', '\u0b67', '\u0b68', '\u0b69', '\u0b6a', '\u0b6b', '\u0b6c', '\u0b6d', '\u0b6e', '\u0b6f'];
+function toOdiaDigits(s) { return s.replace(/[0-9]/g, d => ODIA_DIGITS[+d]); }
+/* For digit runs, suggestions are just the Odia-numeral spelling and the
+   plain-English spelling — Odia listed first since these are Odia fields,
+   but nothing is forced: the person picks either from the same dropdown
+   used for letters (arrow keys / number keys / space,enter to accept). */
+function digitSuggestions(word) { return [toOdiaDigits(word), word]; }
 async function fetchTranslitSuggestions(word) {
   try {
     const d = await api('/transliterate?text=' + encodeURIComponent(word));
@@ -1117,9 +1210,14 @@ function attachTranslit(el) {
 function onTranslitInput(el) {
   if (!TRANSLIT_ON || el.disabled) { hideTranslitPop(); return; }
   const w = currentLatinWord(el);
-  if (!w || w.word.length < 2) { hideTranslitPop(); return; }
+  if (!w || w.word.length < (w.kind === 'digit' ? 1 : 2)) { hideTranslitPop(); return; }
   TL.el = el; TL.start = w.start; TL.end = w.end; TL.word = w.word; TL.sel = 0;
   clearTimeout(TL.timer);
+  if (w.kind === 'digit') {
+    TL.items = digitSuggestions(w.word);
+    renderTranslitPop();
+    return;
+  }
   TL.timer = setTimeout(async () => {
     const items = await fetchTranslitSuggestions(w.word);
     const cur = currentLatinWord(el);
@@ -1177,6 +1275,16 @@ function onTranslitKey(ev, el) {
     ev.preventDefault();
     clearTimeout(TL.timer);
     const tail = (ev.key === 'Enter') ? (el.tagName === 'TEXTAREA' ? '\n' : '') : ' ';
+    if (w.kind === 'digit') {
+      const rep = digitSuggestions(w.word)[0] + tail;
+      el.value = el.value.slice(0, w.start) + rep + el.value.slice(w.end);
+      const pos = w.start + rep.length;
+      try { el.setSelectionRange(pos, pos); } catch (_) {}
+      el.dispatchEvent(new Event('input'));
+      el.dispatchEvent(new Event('change'));
+      hideTranslitPop();
+      return;
+    }
     (async () => {
       const items = await fetchTranslitSuggestions(w.word);
       const rep = (items && items[0] ? items[0] : w.word) + tail;
