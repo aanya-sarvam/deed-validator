@@ -359,25 +359,34 @@ def ingest_gcs(init=True, progress=None):
 def ingest_gcs_raw(init=True, progress=None):
     """Ingest the raw orissa_deeds export directly from GCS — reads
     grounding/grounding_good_partial.jsonl and ocr/ocr_dataset.jsonl (under
-    gcs_store.GCS_RAW_PREFIX, default 'ocr_outputs/orissa_deeds'), no local
-    copies needed. Only ever does object READS on the bucket — never lists
-    or writes to it. PDFs are NOT built here: pdf_file is set to
-    '<reg_no>.pdf' whenever that deed has page images, and the actual PDF is
-    stitched from those pages on first view (gcs_store.fetch_or_build_pdf),
-    same lazy-download pattern ingest_gcs() already uses for pre-made PDFs.
-    Safe to re-run: existing deed_numbers are skipped, so this is exactly
-    how you add a new batch without resetting anything."""
+    every prefix from gcs_store.raw_prefixes()), no local copies needed. Only
+    ever does object READS on the bucket — never lists or writes to it. PDFs
+    are NOT built here: pdf_file is set to '<reg_no>.pdf' whenever that deed
+    has page images, and the actual PDF is stitched from those pages on first
+    view (gcs_store.fetch_or_build_pdf), same lazy-download pattern
+    ingest_gcs() already uses for pre-made PDFs. Safe to re-run: existing
+    deed_numbers are skipped, so this is exactly how you add a new batch
+    without resetting anything."""
     import gcs_store
     if init:
         init_db()
-    raw_prefix = gcs_store._raw_prefix()
-    print(f"[gcs-raw] reading dataset from gs://.../{raw_prefix}", flush=True)
-    graw = gcs_store.read_text_abs(f"{raw_prefix}/grounding/grounding_good_partial.jsonl")
+    total_loaded = 0
+    for prefix in gcs_store.raw_prefixes():
+        loaded = _ingest_gcs_raw_prefix(prefix, progress=progress)
+        total_loaded += loaded
+    return total_loaded
+
+
+def _ingest_gcs_raw_prefix(prefix, progress=None):
+    """Ingest one raw-dataset prefix. Returns number of newly loaded deeds."""
+    import gcs_store
+    print(f"[gcs-raw] reading dataset from gs://.../{prefix}", flush=True)
+    graw = gcs_store.read_text_abs(f"{prefix}/grounding/grounding_good_partial.jsonl")
     if not graw:
-        print(f"[gcs-raw] grounding_good_partial.jsonl not found under {raw_prefix}/grounding/",
+        print(f"[gcs-raw] grounding_good_partial.jsonl not found under {prefix}/grounding/",
               flush=True)
         return 0
-    ocr_raw = gcs_store.read_text_abs(f"{raw_prefix}/ocr/ocr_dataset.jsonl")
+    ocr_raw = gcs_store.read_text_abs(f"{prefix}/ocr/ocr_dataset.jsonl")
 
     # reg_no -> [(page, text), ...] and reg_no -> has-any-pages, built once
     # in memory for this ingest pass (not persisted — only the lighter
@@ -403,7 +412,7 @@ def ingest_gcs_raw(init=True, progress=None):
     loaded = skipped = failed = 0
     try:
         lines = [l for l in graw.splitlines() if l.strip()]
-        print(f"[gcs-raw] {len(lines)} deeds in grounding file", flush=True)
+        print(f"[gcs-raw] {len(lines)} deeds in grounding file ({prefix})", flush=True)
         for n, line in enumerate(lines, 1):
             try:
                 g = json.loads(line)
@@ -426,9 +435,10 @@ def ingest_gcs_raw(init=True, progress=None):
                     failed += 1
                 if n % 500 == 0:
                     con.commit()
-                    print(f"[gcs-raw] {n}/{len(lines)} processed ({loaded} loaded)", flush=True)
+                    print(f"[gcs-raw] {prefix}: {n}/{len(lines)} processed "
+                          f"({loaded} loaded)", flush=True)
                     if progress:
-                        progress(n, len(lines), loaded)
+                        progress(n, len(lines), loaded, prefix=prefix)
             except Exception as e:
                 failed += 1
                 print(f"[gcs-raw] failed line {n} ({locals().get('reg_no', '?')}): {e}",
@@ -436,8 +446,8 @@ def ingest_gcs_raw(init=True, progress=None):
         con.commit()
     finally:
         con.close()
-    print(f"[gcs-raw] done: {loaded} loaded, {skipped} already present, {failed} failed",
-          flush=True)
+    print(f"[gcs-raw] {prefix}: done — {loaded} loaded, {skipped} already present, "
+          f"{failed} failed", flush=True)
     return loaded
 
 

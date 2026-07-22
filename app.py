@@ -246,16 +246,34 @@ def _run_incremental_ingest():
     _auto_ingest() above which only loads data on a first, empty-DB boot."""
     import glob
     try:
+        _ingest_status.update(state="running", detail="reingest started")
+
+        def _progress(detail, documents=None):
+            upd = {"state": "running", "detail": detail}
+            if documents is not None:
+                upd["documents"] = documents
+            _ingest_status.update(**upd)
+
+        def _gcs_progress(n, total, loaded):
+            _progress(f"gcs sample: {n}/{total} ({loaded} loaded)")
+
+        def _gcs_raw_progress(n, total, loaded, prefix=None):
+            pfx = f" [{prefix}]" if prefix else ""
+            _progress(f"gcs-raw{pfx}: {n}/{total} lines ({loaded} loaded)")
+
         import gcs_store
         if gcs_store.enabled():
             from ingest_json import ingest_gcs, ingest_gcs_raw
+            _progress("checking GCS sample_1000-style batches")
             print("[reingest] checking GCS sample_1000-style batches...", flush=True)
-            ingest_gcs(init=False)
+            ingest_gcs(init=False, progress=_gcs_progress)
+            _progress("checking raw orissa_deeds export on GCS")
             print("[reingest] checking raw orissa_deeds export on GCS...", flush=True)
-            ingest_gcs_raw(init=False)
+            ingest_gcs_raw(init=False, progress=_gcs_raw_progress)
         groundings = glob.glob("data/**/grounding.json", recursive=True)
         if groundings:
             from ingest_json import ingest_dir
+            _progress(f"checking {len(groundings)} local deed folder(s)")
             print(f"[reingest] checking {len(groundings)} local deed folder(s)...", flush=True)
             ingest_dir("data", init=False)
         with connect() as con:
@@ -278,6 +296,33 @@ def admin_reingest(user=Depends(require_admin)):
     import threading
     threading.Thread(target=_run_incremental_ingest, daemon=True).start()
     return {"ok": True, "message": "Ingestion started — check /api/ingest-status"}
+
+
+@app.get("/api/admin/gcs-raw-diagnostics")
+def gcs_raw_diagnostics(user=Depends(require_admin)):
+    """Cheap read-only check: for each configured raw prefix, report whether
+    the grounding and OCR jsonl files exist in the bucket and their sizes.
+    Uses blob.exists() only — no full-file download."""
+    import os
+    import gcs_store
+    if not gcs_store.enabled():
+        return {"gcs_enabled": False, "bucket": None, "prefixes": []}
+    out = []
+    for prefix in gcs_store.raw_prefixes():
+        grounding_path = f"{prefix}/grounding/grounding_good_partial.jsonl"
+        ocr_path = f"{prefix}/ocr/ocr_dataset.jsonl"
+        out.append({
+            "prefix": prefix,
+            "grounding_good_partial": {
+                "path": grounding_path,
+                **gcs_store.blob_stat(grounding_path),
+            },
+            "ocr_dataset": {
+                "path": ocr_path,
+                **gcs_store.blob_stat(ocr_path),
+            },
+        })
+    return {"gcs_enabled": True, "bucket": os.environ.get("GCS_BUCKET"), "prefixes": out}
 
 
 class SignupIn(BaseModel):
