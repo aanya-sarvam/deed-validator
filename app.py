@@ -236,11 +236,47 @@ def require_monitor(user=Depends(current_user)):
     return user
 
 
+def _run_incremental_ingest():
+    """Checks every configured source for deeds not yet in the DB and loads
+    them: GCS sample_1000-style pre-made-PDF batches, the raw orissa_deeds
+    export straight from GCS (no local files, no bucket writes — PDFs build
+    lazily on first view), and local data/ folders. Each source skips
+    deed_numbers already present, so this is safe to call anytime — startup
+    or Admin -> Reingest — without resetting or duplicating anything, unlike
+    _auto_ingest() above which only loads data on a first, empty-DB boot."""
+    import glob
+    try:
+        import gcs_store
+        if gcs_store.enabled():
+            from ingest_json import ingest_gcs, ingest_gcs_raw
+            print("[reingest] checking GCS sample_1000-style batches...", flush=True)
+            ingest_gcs(init=False)
+            print("[reingest] checking raw orissa_deeds export on GCS...", flush=True)
+            ingest_gcs_raw(init=False)
+        groundings = glob.glob("data/**/grounding.json", recursive=True)
+        if groundings:
+            from ingest_json import ingest_dir
+            print(f"[reingest] checking {len(groundings)} local deed folder(s)...", flush=True)
+            ingest_dir("data", init=False)
+        with connect() as con:
+            n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+        _ingest_status.update(state="done", documents=n, detail="reingest complete")
+        print(f"[reingest] done — {n} documents total", flush=True)
+    except Exception as e:
+        _ingest_status.update(state="error", detail=str(e))
+        print("[reingest] FAILED:", flush=True)
+        import traceback
+        traceback.print_exc()
+
+
 @app.post("/api/admin/reingest")
 def admin_reingest(user=Depends(require_admin)):
-    """Manually (re)run ingestion. Safe: existing deeds are skipped."""
+    """Manually run ingestion for any NEW deeds across all configured
+    sources. Safe: existing deeds are skipped everywhere — this is how you
+    add a new batch (e.g. the raw orissa_deeds export) without resetting
+    the DB."""
     import threading
-    threading.Thread(target=_auto_ingest, daemon=True).start()
+    threading.Thread(target=_run_incremental_ingest, daemon=True).start()
     return {"ok": True, "message": "Ingestion started — check /api/ingest-status"}
 
 
@@ -458,7 +494,7 @@ def get_pdf(doc_id: int, user=Depends(current_user)):
         import gcs_store
         if gcs_store.enabled():
             try:
-                fetched = gcs_store.fetch_pdf(doc["deed_number"])
+                fetched = gcs_store.fetch_or_build_pdf(doc["deed_number"])
                 if fetched:
                     path = fetched
             except Exception as e:

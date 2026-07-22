@@ -1369,7 +1369,25 @@ async function loadProgress() {
     <table class="stats"><thead><tr><th>Day</th><th>Validated</th></tr></thead><tbody>${dailyRows}</tbody></table>
     <h2>Flagged documents</h2>
     <table class="stats"><thead><tr><th>Document</th><th>Reason</th><th>Flagged by</th></tr></thead><tbody>${flaggedRows}</tbody></table>
+    <h2>Data ingestion</h2>
+    <p id="ri_status" style="color:var(--muted)">Checks every configured source (GCS, local data/) for deeds not yet loaded and adds them. Existing deeds are always skipped — this never resets or duplicates anything.</p>
+    <p><button class="primary" onclick="doReingest()">Check for new deeds</button></p>
     <p style="margin-top:16px"><button class="primary" onclick="location.href='/api/export?token='+TOKEN">Download corrected dataset (JSON)</button></p>`;
+}
+
+async function doReingest() {
+  const el = $('ri_status');
+  el.textContent = 'Starting…';
+  try {
+    await api('/admin/reingest', { method: 'POST' });
+  } catch (e) { el.textContent = 'Error: ' + e.message; return; }
+  const poll = setInterval(async () => {
+    try {
+      const s = await api('/ingest-status');
+      el.textContent = `${s.state} — ${s.detail || ''} (${s.documents_now} documents total)`;
+      if (s.state === 'done' || s.state === 'error') clearInterval(poll);
+    } catch (e) { el.textContent = 'Error: ' + e.message; clearInterval(poll); }
+  }, 2000);
 }
 
 /* ---------- admin: assign ---------- */

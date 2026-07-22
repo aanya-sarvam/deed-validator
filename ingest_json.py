@@ -356,6 +356,91 @@ def ingest_gcs(init=True, progress=None):
     return loaded
 
 
+def ingest_gcs_raw(init=True, progress=None):
+    """Ingest the raw orissa_deeds export directly from GCS — reads
+    grounding/grounding_good_partial.jsonl and ocr/ocr_dataset.jsonl (under
+    gcs_store.GCS_RAW_PREFIX, default 'ocr_outputs/orissa_deeds'), no local
+    copies needed. Only ever does object READS on the bucket — never lists
+    or writes to it. PDFs are NOT built here: pdf_file is set to
+    '<reg_no>.pdf' whenever that deed has page images, and the actual PDF is
+    stitched from those pages on first view (gcs_store.fetch_or_build_pdf),
+    same lazy-download pattern ingest_gcs() already uses for pre-made PDFs.
+    Safe to re-run: existing deed_numbers are skipped, so this is exactly
+    how you add a new batch without resetting anything."""
+    import gcs_store
+    if init:
+        init_db()
+    raw_prefix = gcs_store._raw_prefix()
+    print(f"[gcs-raw] reading dataset from gs://.../{raw_prefix}", flush=True)
+    graw = gcs_store.read_text_abs(f"{raw_prefix}/grounding/grounding_good_partial.jsonl")
+    if not graw:
+        print(f"[gcs-raw] grounding_good_partial.jsonl not found under {raw_prefix}/grounding/",
+              flush=True)
+        return 0
+    ocr_raw = gcs_store.read_text_abs(f"{raw_prefix}/ocr/ocr_dataset.jsonl")
+
+    # reg_no -> [(page, text), ...] and reg_no -> has-any-pages, built once
+    # in memory for this ingest pass (not persisted — only the lighter
+    # page-image index in gcs_store is cached, for PDF viewing later).
+    pages_by_deed = {}
+    if ocr_raw:
+        for line in ocr_raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            reg_no = str(o.get("reg_no") or "")
+            if reg_no:
+                pages_by_deed.setdefault(reg_no, []).append(
+                    (o.get("page", 0), o.get("text", "")))
+    for v in pages_by_deed.values():
+        v.sort(key=lambda x: x[0])
+
+    con = connect()
+    loaded = skipped = failed = 0
+    try:
+        lines = [l for l in graw.splitlines() if l.strip()]
+        print(f"[gcs-raw] {len(lines)} deeds in grounding file", flush=True)
+        for n, line in enumerate(lines, 1):
+            try:
+                g = json.loads(line)
+                reg_no = str(g.get("reg_no") or "").strip()
+                if not reg_no:
+                    failed += 1
+                    continue
+                pages = pages_by_deed.get(reg_no)
+                full_text = None
+                if pages:
+                    parts = [f"— Page {pg} —\n{txt}".strip() for pg, txt in pages if txt]
+                    full_text = "\n\n".join(parts) or None
+                pdf_name = f"{reg_no}.pdf" if pages else None
+                ok = _insert_from_grounding(con, g, full_text, pdf_name)
+                if ok:
+                    loaded += 1
+                elif ok is False:
+                    skipped += 1
+                else:
+                    failed += 1
+                if n % 500 == 0:
+                    con.commit()
+                    print(f"[gcs-raw] {n}/{len(lines)} processed ({loaded} loaded)", flush=True)
+                    if progress:
+                        progress(n, len(lines), loaded)
+            except Exception as e:
+                failed += 1
+                print(f"[gcs-raw] failed line {n} ({locals().get('reg_no', '?')}): {e}",
+                      flush=True)
+        con.commit()
+    finally:
+        con.close()
+    print(f"[gcs-raw] done: {loaded} loaded, {skipped} already present, {failed} failed",
+          flush=True)
+    return loaded
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("usage: python ingest_json.py <data_dir | deed_folder>")

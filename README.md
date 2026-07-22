@@ -46,6 +46,28 @@ uvicorn app:app --port 8000
 - Re-runnable: existing deed numbers are skipped, so ingesting a new batch is
   just running the command again with the new files.
 
+### Adding the raw orissa_deeds export (read-only GCS access)
+
+`grounding/grounding_good_partial.jsonl` + `ocr/ocr_dataset.jsonl`, both
+under `GCS_RAW_PREFIX` (default `ocr_outputs/orissa_deeds`, same bucket as
+`GCS_BUCKET`), are read directly — no download, no local conversion step,
+and no write access to the bucket needed. `ingest_gcs_raw()` in
+`ingest_json.py` loads deed metadata + OCR text into Postgres immediately;
+each deed's scan PDF is stitched from its raw page images the first time
+someone opens it (`gcs_store.fetch_or_build_pdf`) and cached locally after
+that, the same lazy pattern already used for pre-made `sample_1000` PDFs.
+
+To load a new batch: Admin → Reingest (or `POST /api/admin/reingest`), or
+locally: `python -c "from ingest_json import ingest_gcs_raw; ingest_gcs_raw()"`.
+Safe to re-run — existing deed_numbers are skipped everywhere, so nothing
+is ever reset or duplicated.
+
+If you don't have GCS read access either and are working from local copies
+of the dataset files, `convert_orissa_raw.py <orissa_deeds_dir> data/batch_2`
+reshapes them into per-deed folders (`grounding.json` + `ocr.jsonl` +
+`<reg_no>.pdf`, PDFs built up front instead of on first view) that
+`ingest_json.py data/batch_2` or `ingest_dir()` can load the normal way.
+
 ## Extracting corrected data
 
 Admin -> Progress -> "Download corrected dataset", or:

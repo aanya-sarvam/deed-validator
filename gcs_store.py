@@ -106,3 +106,102 @@ def fetch_pdf(reg_no, cache_dir="static/scans"):
         return None
     blob.download_to_filename(str(local))
     return local
+
+
+# ---------------------------------------------------------------------------
+# Raw orissa_deeds dataset (grounding_good_partial.jsonl + ocr_dataset.jsonl +
+# per-page images), read-only. Unlike sample_1000, deeds here have no
+# pre-made <reg_no>.pdf in the bucket — only individual page images — so a
+# PDF is stitched on first view and cached locally, same lazy pattern as
+# fetch_pdf() above. Only ever needs object READ, never LIST or WRITE.
+# ---------------------------------------------------------------------------
+
+def _raw_prefix():
+    return os.environ.get("GCS_RAW_PREFIX", "ocr_outputs/orissa_deeds").strip("/")
+
+
+def read_text_abs(abs_path):
+    """Read a text object by bucket-root-relative path (ignores GCS_PREFIX,
+    unlike read_text() above). None if missing."""
+    bucket = _get_bucket()
+    blob = bucket.blob(abs_path)
+    if not blob.exists():
+        return None
+    return blob.download_as_text()
+
+
+_raw_page_index = None
+
+
+def _load_raw_page_index():
+    """reg_no -> sorted [[page, image_rel_path], ...], built once from
+    ocr/ocr_dataset.jsonl and cached (in memory + on local disk, since the
+    source file is ~90MB and re-downloading/re-parsing it on every cold
+    start / every PDF view would be wasteful)."""
+    global _raw_page_index
+    if _raw_page_index is not None:
+        return _raw_page_index
+    cache_file = Path("static/.raw_page_index.json")
+    if cache_file.exists():
+        try:
+            _raw_page_index = json.loads(cache_file.read_text())
+            return _raw_page_index
+        except Exception:
+            pass
+    index = {}
+    raw = read_text_abs(f"{_raw_prefix()}/ocr/ocr_dataset.jsonl")
+    if raw:
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            reg_no = str(o.get("reg_no") or "")
+            img = o.get("image")
+            if reg_no and img:
+                index.setdefault(reg_no, []).append([o.get("page", 0), img])
+    for v in index.values():
+        v.sort(key=lambda x: x[0] or 0)
+    _raw_page_index = index
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(index))
+    except Exception:
+        pass
+    return index
+
+
+def fetch_or_build_pdf(reg_no, cache_dir="static/scans"):
+    """Return a local PDF for reg_no: prefer a pre-made <reg_no>.pdf
+    (sample_1000-style batches, via fetch_pdf), else stitch one from that
+    deed's raw page images. None if neither source has anything."""
+    p = fetch_pdf(reg_no, cache_dir)
+    if p:
+        return p
+    pages = _load_raw_page_index().get(reg_no)
+    if not pages:
+        return None
+    from PIL import Image
+    import io
+    bucket = _get_bucket()
+    prefix = _raw_prefix()
+    imgs = []
+    for _page_no, rel in pages:
+        try:
+            blob = bucket.blob(f"{prefix}/{rel}")
+            if not blob.exists():
+                continue
+            data = blob.download_as_bytes()
+            imgs.append(Image.open(io.BytesIO(data)).convert("RGB"))
+        except Exception as e:
+            print(f"[gcs-raw] page fetch failed {reg_no}/{rel}: {e}")
+    if not imgs:
+        return None
+    cache = Path(cache_dir)
+    cache.mkdir(parents=True, exist_ok=True)
+    local = cache / f"{reg_no}.pdf"
+    imgs[0].save(local, save_all=True, append_images=imgs[1:])
+    return local
