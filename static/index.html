@@ -191,6 +191,10 @@
     margin-top: 8px; }
   .party-item-title { font-size: 0.7667rem; font-weight: 500; color: var(--ink);
     margin-bottom: 2px; }
+  .party-item-title-row { display: flex; align-items: center; justify-content: space-between; }
+  .party-del-btn { border: none; background: none; cursor: pointer; padding: 0 2px;
+    font-size: 0.8rem; color: var(--muted); line-height: 1; opacity: 0.6; }
+  .party-del-btn:hover { opacity: 1; color: var(--bad); }
   .party-add-btn { margin-top: 8px; }
   textarea { resize: vertical; min-height: 54px; }
   #pdfpane .bar { padding: 6px 14px; font-size: 0.8333rem; color: var(--muted);
@@ -1069,7 +1073,10 @@ function renderPartyGroup(secEl, f, editable) {
     for (let i = 0; i < n; i++) {
       const fid = `${f.id}_${i}`;
       const item = document.createElement('div'); item.className = 'party-item';
-      item.innerHTML = `<div class="party-item-title">${noun} ${i + 1}</div>
+      item.innerHTML = `<div class="party-item-title-row">
+          <div class="party-item-title">${noun} ${i + 1}</div>
+          ${editable ? `<button type="button" class="party-del-btn" data-party-del="${i}" title="Delete this ${noun.toLowerCase()}">🗑</button>` : ''}
+        </div>
         <div class="lblrow"><label for="${fid}_odia">${f.label} (Odia)</label>
           <button type="button" class="eye-btn" title="Show English / original extracted values" onclick="toggleOrig('${fid}')">👁</button></div>
         <input id="${fid}_odia" data-party-odia="${i}" lang="or" value="${escapeAttr(odiaArr[i])}" ${editable ? '' : 'disabled'}>
@@ -1080,6 +1087,9 @@ function renderPartyGroup(secEl, f, editable) {
       wrap.appendChild(item);
     }
     if (editable) {
+      wrap.querySelectorAll('[data-party-del]').forEach(el => {
+        el.addEventListener('click', () => deleteItem(+el.dataset.partyDel));
+      });
       wrap.querySelectorAll('[data-party-odia]').forEach(el => {
         attachTranslit(el);
         el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
@@ -1092,6 +1102,16 @@ function renderPartyGroup(secEl, f, editable) {
         el.addEventListener('change', savePartyField);
       });
     }
+  }
+
+  function deleteItem(i) {
+    if (engArr.length <= 1 && odiaArr.length <= 1) {
+      engArr[0] = ''; odiaArr[0] = '';           // last one left — clear instead of removing
+    } else {
+      engArr.splice(i, 1); odiaArr.splice(i, 1);
+    }
+    build();
+    savePartyField();
   }
 
   async function savePartyField() {
