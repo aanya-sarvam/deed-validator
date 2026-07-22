@@ -1371,7 +1371,11 @@ async function loadProgress() {
     <table class="stats"><thead><tr><th>Document</th><th>Reason</th><th>Flagged by</th></tr></thead><tbody>${flaggedRows}</tbody></table>
     <h2>Data ingestion</h2>
     <p id="ri_status" style="color:var(--muted)">Checks every configured source (GCS, local data/) for deeds not yet loaded and adds them. Existing deeds are always skipped — this never resets or duplicates anything.</p>
-    <p><button class="primary" onclick="doReingest()">Check for new deeds</button></p>
+    <p>
+      <button class="primary" onclick="doReingest()">Check for new deeds</button>
+      <button class="small" onclick="doGcsDiagnostics()" style="margin-left:8px">Check GCS paths</button>
+    </p>
+    <pre id="gcs_diag" style="display:none;margin-top:8px;padding:10px;background:#f4f6f9;border-radius:6px;font-size:0.8rem;white-space:pre-wrap;word-break:break-all"></pre>
     <p style="margin-top:16px"><button class="primary" onclick="location.href='/api/export?token='+TOKEN">Download corrected dataset (JSON)</button></p>`;
 }
 
@@ -1388,6 +1392,18 @@ async function doReingest() {
       if (s.state === 'done' || s.state === 'error') clearInterval(poll);
     } catch (e) { el.textContent = 'Error: ' + e.message; clearInterval(poll); }
   }, 2000);
+}
+
+async function doGcsDiagnostics() {
+  const el = $('gcs_diag');
+  el.style.display = 'block';
+  el.textContent = 'Checking GCS paths…';
+  try {
+    const d = await api('/admin/gcs-raw-diagnostics');
+    el.textContent = JSON.stringify(d, null, 2);
+  } catch (e) {
+    el.textContent = 'Error: ' + e.message;
+  }
 }
 
 /* ---------- admin: assign ---------- */
