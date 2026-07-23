@@ -150,67 +150,61 @@ def read_text_abs(abs_path):
     return blob.download_as_text()
 
 
-_raw_page_index = None
+def _pages_for_reg_no(reg_no):
+    """Find {prefix, pages:[[page, image_rel_path], ...]} for one reg_no by
+    streaming ocr/ocr_dataset.jsonl line-by-line, without ever holding the
+    whole dataset (or any other deed's entries) in memory.
 
-
-def _normalize_page_index(data):
-    """Accept legacy reg_no -> [[page, path], ...] caches from single-prefix
-    deployments and normalize to reg_no -> {prefix, pages}."""
-    if not data:
-        return data
-    sample = next(iter(data.values()), None)
-    if sample and isinstance(sample, list):
-        pfx = _raw_prefix()
-        return {k: {"prefix": pfx, "pages": v} for k, v in data.items()}
-    return data
-
-
-def _load_raw_page_index():
-    """reg_no -> {prefix, pages:[[page, image_rel_path], ...]}, built once
-    from ocr/ocr_dataset.jsonl under every raw prefix and cached (in memory
-    + on local disk, since the source files are large and re-downloading on
-    every cold start / PDF view would be wasteful). First prefix wins when
-    a reg_no appears in more than one dataset."""
-    global _raw_page_index
-    if _raw_page_index is not None:
-        return _raw_page_index
-    cache_file = Path("static/.raw_page_index.json")
+    This replaces an earlier design that built ONE big reg_no -> pages dict
+    for the entire raw dataset and kept it resident for the process's
+    lifetime, cached to a JSON file on local disk to avoid rebuilding it
+    every time. That disk cache lives on Render's local filesystem, which is
+    wiped on every deploy — so after any redeploy, the very first raw PDF
+    view had to re-download and json-parse the *entire* ocr_dataset.jsonl
+    (across every raw prefix) into memory in one shot before it could look
+    up a single deed. With ~10k+ documents behind it, that one-time rebuild
+    was almost certainly the actual trigger for the OOM restarts, separate
+    from (and larger than) the per-document image-stitch fix already
+    shipped. Streaming + caching only the tiny per-deed result keeps peak
+    memory to roughly this one deed's page list, regardless of dataset size,
+    at the cost of a network scan on a not-yet-cached deed's first view."""
+    cache_file = Path("static/.raw_pages") / f"{reg_no}.json"
     if cache_file.exists():
         try:
-            _raw_page_index = _normalize_page_index(json.loads(cache_file.read_text()))
-            return _raw_page_index
+            return json.loads(cache_file.read_text())
         except Exception:
             pass
-    index = {}
+    bucket = _get_bucket()
     for prefix in raw_prefixes():
-        raw = read_text_abs(f"{prefix}/ocr/ocr_dataset.jsonl")
-        if not raw:
+        blob = bucket.blob(f"{prefix}/ocr/ocr_dataset.jsonl")
+        if not blob.exists():
             continue
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        pages = []
+        try:
+            with blob.open("rt") as fh:   # streams from GCS; no full-text buffer
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        o = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if str(o.get("reg_no") or "") == reg_no and o.get("image"):
+                        pages.append([o.get("page", 0), o.get("image")])
+        except Exception as e:
+            print(f"[gcs-raw] scan failed for {prefix}: {e}")
+            continue
+        if pages:
+            pages.sort(key=lambda x: x[0] or 0)
+            result = {"prefix": prefix, "pages": pages}
             try:
-                o = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            reg_no = str(o.get("reg_no") or "")
-            img = o.get("image")
-            if reg_no and img:
-                if reg_no not in index:
-                    index[reg_no] = {"prefix": prefix, "pages": []}
-                elif index[reg_no]["prefix"] != prefix:
-                    continue
-                index[reg_no]["pages"].append([o.get("page", 0), img])
-    for entry in index.values():
-        entry["pages"].sort(key=lambda x: x[0] or 0)
-    _raw_page_index = index
-    try:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps(index))
-    except Exception:
-        pass
-    return index
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(json.dumps(result))
+            except Exception:
+                pass
+            return result
+    return None
 
 
 def _is_jpeg(data):
@@ -236,7 +230,7 @@ def fetch_or_build_pdf(reg_no, cache_dir="static/scans"):
     p = fetch_pdf(reg_no, cache_dir)
     if p:
         return p
-    entry = _load_raw_page_index().get(reg_no)
+    entry = _pages_for_reg_no(reg_no)
     if not entry:
         return None
     import img2pdf
