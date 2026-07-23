@@ -204,8 +204,8 @@
   #pdfframe { flex: 1; border: 0; width: 100%; background: #3a3d42; }
   #pageimages { flex: 1; display: none; overflow-y: auto; background: #3a3d42;
     padding: 10px; box-sizing: border-box; }
-  #pageimages img { display: block; width: 100%; margin: 0 auto 10px; background: #fff;
-    box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+  #pageimages img { display: block; width: 100%; min-height: 120px; margin: 0 auto 10px;
+    background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
   #pageimages .pageno { text-align: center; font-size: 0.7333rem; color: var(--muted);
     margin: -4px 0 10px; }
   #nopdf { flex: 1; display: none; align-items: center; justify-content: center; color: var(--muted); }
@@ -852,22 +852,26 @@ async function showScan(doc) {
     $('pdfframe').src = `/api/documents/${doc.id}/pdf?token=${TOKEN}`;
     return;
   }
-  if (info.mode === 'images' && info.count > 0) {
+  if (info.mode === 'images' && info.pages && info.pages.length > 0) {
     $('pdfframe').style.display = 'none'; $('pdfframe').src = '';
     $('nopdf').style.display = 'none';
     const wrap = $('pageimages'); wrap.style.display = ''; wrap.innerHTML = '';
-    // Requested one at a time and rendered as a plain scrollable sequence —
-    // the server never assembles these into a PDF, so it only ever holds
-    // one page's bytes in memory per request instead of the whole deed.
-    for (let n = 1; n <= info.count; n++) {
+    // Requested one at a time (using the ACTUAL page numbers from the
+    // backend, not an assumed 1..count range — the dataset's numbering
+    // isn't guaranteed to start at 1 or be contiguous) and rendered as a
+    // plain scrollable sequence — the server never assembles these into a
+    // PDF, so it only ever holds one page's bytes in memory per request
+    // instead of the whole deed.
+    info.pages.forEach((pageNum, i) => {
       const img = document.createElement('img');
       img.loading = 'lazy';
-      img.alt = `Page ${n}`;
-      img.src = `/api/documents/${doc.id}/page/${n}?token=${TOKEN}`;
+      img.alt = `Page ${i + 1}`;
+      img.onerror = () => { img.alt = `Page ${i + 1} failed to load`; };
+      img.src = `/api/documents/${doc.id}/page/${pageNum}?token=${TOKEN}`;
       const label = document.createElement('div'); label.className = 'pageno';
-      label.textContent = `Page ${n} of ${info.count}`;
+      label.textContent = `Page ${i + 1} of ${info.pages.length}`;
       wrap.appendChild(img); wrap.appendChild(label);
-    }
+    });
     return;
   }
   hideScan();

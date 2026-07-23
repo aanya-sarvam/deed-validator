@@ -577,7 +577,14 @@ def get_pages(doc_id: int, user=Depends(current_user)):
     if gcs_store.enabled():
         entry = gcs_store.pages_entry(doc["deed_number"])
         if entry:
-            return {"mode": "images", "count": len(entry["pages"])}
+            # Actual page numbers, in order — NOT assumed to be 1..count.
+            # The raw dataset's page numbers aren't guaranteed to start at 1
+            # or be contiguous, so the frontend must use these exact values
+            # rather than generating its own 1..count sequence (which was
+            # producing 404s — and blank space, not a visible error — for
+            # any deed whose numbering didn't happen to match).
+            page_nums = [pg for pg, _rel in entry["pages"]]
+            return {"mode": "images", "pages": page_nums}
     raise HTTPException(404, "No scan attached to this deed")
 
 
