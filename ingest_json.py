@@ -412,6 +412,10 @@ def ingest_gcs_raw(init=True, progress=None):
     con = connect()
     loaded = skipped = failed = 0
     try:
+        existing = {r["deed_number"] for r in
+                    con.execute("SELECT deed_number FROM documents").fetchall()}
+        print(f"[gcs-raw] {len(existing)} deeds already in DB (fast skip, no per-line query)",
+              flush=True)
         lines = [l for l in graw.splitlines() if l.strip()]
         print(f"[gcs-raw] {len(lines)} deeds in grounding file", flush=True)
         for n, line in enumerate(lines, 1):
@@ -420,6 +424,9 @@ def ingest_gcs_raw(init=True, progress=None):
                 reg_no = str(g.get("reg_no") or "").strip()
                 if not reg_no:
                     failed += 1
+                    continue
+                if reg_no in existing:
+                    skipped += 1
                     continue
                 pages = pages_by_deed.get(reg_no)
                 full_text = None
@@ -430,6 +437,7 @@ def ingest_gcs_raw(init=True, progress=None):
                 ok = _insert_from_grounding(con, g, full_text, pdf_name)
                 if ok:
                     loaded += 1
+                    existing.add(reg_no)
                 elif ok is False:
                     skipped += 1
                 else:
@@ -441,6 +449,10 @@ def ingest_gcs_raw(init=True, progress=None):
                         progress(n, len(lines), loaded)
             except Exception as e:
                 failed += 1
+                try:
+                    con.rollback()   # clear the aborted-transaction state, or every
+                except Exception:    # line after this one would fail too
+                    pass
                 print(f"[gcs-raw] failed line {n} ({locals().get('reg_no', '?')}): {e}",
                       flush=True)
         con.commit()

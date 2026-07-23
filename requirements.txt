@@ -4,3 +4,4 @@ psycopg[binary]
 bcrypt
 google-cloud-storage
 Pillow
+img2pdf

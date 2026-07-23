@@ -213,35 +213,60 @@ def _load_raw_page_index():
     return index
 
 
+def _is_jpeg(data):
+    return data[:2] == b"\xff\xd8"
+
+
 def fetch_or_build_pdf(reg_no, cache_dir="static/scans"):
     """Return a local PDF for reg_no: prefer a pre-made <reg_no>.pdf
     (sample_1000-style batches, via fetch_pdf), else stitch one from that
-    deed's raw page images. None if neither source has anything."""
+    deed's raw page images.
+
+    Memory note: this used to open every page as a decoded PIL Image and
+    hold ALL of them in memory at once before saving — for a deed with many
+    full-resolution scanned pages that's a large multi-image spike per
+    request, and was a main driver of the OOM restarts (worse as the doc
+    count/traffic grew). Now each page is kept as its already-compressed
+    bytes (JPEG passed through untouched — no quality loss, no re-encode;
+    non-JPEG sources re-encoded once at quality=95 and the decoded pixels
+    freed immediately), and img2pdf embeds the compressed bytes directly
+    without a further decode/re-encode pass. Peak memory is now roughly
+    proportional to the compressed page sizes, not the decoded resolution
+    times the page count."""
     p = fetch_pdf(reg_no, cache_dir)
     if p:
         return p
     entry = _load_raw_page_index().get(reg_no)
     if not entry:
         return None
+    import img2pdf
     from PIL import Image
     import io
+
     bucket = _get_bucket()
     prefix = entry["prefix"]
     pages = entry["pages"]
-    imgs = []
+    page_bytes = []
     for _page_no, rel in pages:
         try:
             blob = bucket.blob(f"{prefix}/{rel}")
             if not blob.exists():
                 continue
             data = blob.download_as_bytes()
-            imgs.append(Image.open(io.BytesIO(data)).convert("RGB"))
+            if _is_jpeg(data):
+                page_bytes.append(data)   # already compressed — embed as-is
+            else:
+                with Image.open(io.BytesIO(data)) as im:
+                    buf = io.BytesIO()
+                    im.convert("RGB").save(buf, format="JPEG", quality=95)
+                    page_bytes.append(buf.getvalue())
         except Exception as e:
             print(f"[gcs-raw] page fetch failed {reg_no}/{rel}: {e}")
-    if not imgs:
+    if not page_bytes:
         return None
     cache = Path(cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
     local = cache / f"{reg_no}.pdf"
-    imgs[0].save(local, save_all=True, append_images=imgs[1:])
+    with open(local, "wb") as out:
+        out.write(img2pdf.convert(page_bytes))
     return local
