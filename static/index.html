@@ -855,7 +855,7 @@ async function showScan(doc) {
   if (info.mode === 'images' && info.pages && info.pages.length > 0) {
     $('pdfframe').style.display = 'none'; $('pdfframe').src = '';
     $('nopdf').style.display = 'none';
-    const wrap = $('pageimages'); wrap.style.display = ''; wrap.innerHTML = '';
+    const wrap = $('pageimages'); wrap.style.display = 'block'; wrap.innerHTML = '';
     // Requested one at a time (using the ACTUAL page numbers from the
     // backend, not an assumed 1..count range — the dataset's numbering
     // isn't guaranteed to start at 1 or be contiguous) and rendered as a
