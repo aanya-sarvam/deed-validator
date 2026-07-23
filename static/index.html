@@ -497,7 +497,14 @@ const api = (path, opts = {}) =>
   fetch(`/api${path}${path.includes('?') ? '&' : '?'}token=${TOKEN}`, {
     headers: { 'Content-Type': 'application/json' }, ...opts
   }).then(async r => {
-    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    if (!r.ok) {
+      let detail = r.statusText;
+      try { detail = (await r.json()).detail || detail; }
+      catch (e) { /* body wasn't JSON (e.g. an unhandled server error) — keep statusText */ }
+      const err = new Error(detail);
+      err.status = r.status;
+      throw err;
+    }
     return r.json();
   });
 
@@ -831,10 +838,12 @@ async function saveDigitized() {
   } catch (e) { $('textsave').textContent = 'Save failed: ' + e.message; }
 }
 
-function hideScan() {
+function hideScan(message) {
   $('pdfframe').style.display = 'none';
   $('pageimages').style.display = 'none';
   $('nopdf').style.display = 'flex';
+  $('nopdf').textContent = message ||
+    'No scan attached to this document — validate from metadata or flag it.';
 }
 
 async function showScan(doc) {
@@ -843,7 +852,7 @@ async function showScan(doc) {
   try {
     info = await api(`/documents/${doc.id}/pages`);
   } catch (e) {
-    hideScan();
+    hideScan(`Could not load scan (${e.status || 'network error'}): ${e.message}`);
     return;
   }
   if (info.mode === 'pdf') {
@@ -862,11 +871,20 @@ async function showScan(doc) {
     // plain scrollable sequence — the server never assembles these into a
     // PDF, so it only ever holds one page's bytes in memory per request
     // instead of the whole deed.
+    let failCount = 0;
+    const total = info.pages.length;
     info.pages.forEach((pageNum, i) => {
       const img = document.createElement('img');
       img.loading = 'lazy';
       img.alt = `Page ${i + 1}`;
-      img.onerror = () => { img.alt = `Page ${i + 1} failed to load`; };
+      img.onerror = () => {
+        img.alt = `Page ${i + 1} (original page ${pageNum}) failed to load`;
+        failCount++;
+        if (failCount === total) {
+          hideScan(`All ${total} page image(s) for this deed failed to load — ` +
+            `check the /api/documents/${doc.id}/page/${info.pages[0]} request in devtools.`);
+        }
+      };
       img.src = `/api/documents/${doc.id}/page/${pageNum}?token=${TOKEN}`;
       const label = document.createElement('div'); label.className = 'pageno';
       label.textContent = `Page ${i + 1} of ${info.pages.length}`;
@@ -874,7 +892,7 @@ async function showScan(doc) {
     });
     return;
   }
-  hideScan();
+  hideScan(`Scan info returned an unexpected shape: ${JSON.stringify(info)}`);
 }
 
 function renderDoc(d) {

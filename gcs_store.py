@@ -231,7 +231,7 @@ def fetch_page_image(reg_no, page_num, cache_dir="static/scans/pages"):
     entry = _pages_for_reg_no(reg_no)
     if not entry:
         return None, None
-    match = next((rel for pg, rel in entry["pages"] if pg == page_num), None)
+    match = next((rel for pg, rel in entry["pages"] if str(pg) == str(page_num)), None)
     if not match:
         return None, None
     cache = Path(cache_dir) / reg_no

@@ -571,11 +571,17 @@ def get_pages(doc_id: int, user=Depends(current_user)):
         if local.exists():
             return {"mode": "pdf"}
         import gcs_store
-        if gcs_store.enabled() and gcs_store.premade_pdf_exists(doc["deed_number"]):
-            return {"mode": "pdf"}
+        try:
+            if gcs_store.enabled() and gcs_store.premade_pdf_exists(doc["deed_number"]):
+                return {"mode": "pdf"}
+        except Exception as e:
+            raise HTTPException(502, f"Could not check for pre-made PDF: {e}")
     import gcs_store
     if gcs_store.enabled():
-        entry = gcs_store.pages_entry(doc["deed_number"])
+        try:
+            entry = gcs_store.pages_entry(doc["deed_number"])
+        except Exception as e:
+            raise HTTPException(502, f"Could not look up scan pages: {e}")
         if entry:
             # Actual page numbers, in order — NOT assumed to be 1..count.
             # The raw dataset's page numbers aren't guaranteed to start at 1
@@ -601,7 +607,10 @@ def get_page_image(doc_id: int, page_num: int, user=Depends(current_user)):
     import gcs_store
     if not gcs_store.enabled():
         raise HTTPException(404, "No scan source configured")
-    data, content_type = gcs_store.fetch_page_image(doc["deed_number"], page_num)
+    try:
+        data, content_type = gcs_store.fetch_page_image(doc["deed_number"], page_num)
+    except Exception as e:
+        raise HTTPException(502, f"Could not fetch page image: {e}")
     if data is None:
         raise HTTPException(404, "Page not found")
     return Response(content=data, media_type=content_type)
