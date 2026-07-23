@@ -483,12 +483,31 @@ def merge_existing_party_fields(con):
     re-ingesting. Corrections are preserved (each item's current value joins
     the merged string) and edit history is repointed to the merged field.
     Idempotent: deeds already merged (or with no party fields) are untouched.
+
+    This runs on every app startup (every deploy AND every restart), so the
+    query MUST filter down to only the rows that still need migrating —
+    pushed into SQL, not Python. The old version selected every row with
+    src_block IS NOT NULL (which matches almost every field from ingestion,
+    migrated or not) and fetched them ALL into memory before checking in a
+    Python loop whether each one actually needed anything done. With ~10k+
+    documents that's easily hundreds of thousands of rows loaded into
+    memory on every single boot — including OOM-triggered restarts, which
+    would then immediately repeat the same expensive load and could keep
+    tripping the memory limit again right after "fixing" it. Once documents
+    are migrated, this query now returns an empty (or near-empty) result
+    set on every later startup instead of the whole table.
     Returns number of documents migrated."""
     import json as _json
     rows = con.execute(
         "SELECT id, document_id, section, label, ocr_value, current_value, "
         "odia_value, position, page_num, src_block FROM fields "
-        "WHERE src_block IS NOT NULL ORDER BY document_id, position").fetchall()
+        "WHERE src_block IS NOT NULL "
+        "AND src_block->>'id' IN ('seller_details','buyer_details','property_details') "
+        "AND COALESCE((src_block->>'item_index')::int, 0) > 0 "
+        "AND NOT (src_block ? 'group') "
+        "ORDER BY document_id, position").fetchall()
+    if not rows:
+        return 0
 
     by_doc = {}
     for r in rows:
@@ -496,11 +515,11 @@ def merge_existing_party_fields(con):
         if isinstance(sb, str):
             sb = _json.loads(sb)
         if not isinstance(sb, dict) or sb.get("group"):
-            continue                      # already merged
+            continue                      # already merged (belt-and-braces; SQL above already excludes these)
         fid = sb.get("id")
         idx = sb.get("item_index") or 0
         if fid not in SECTION_NAMES or not idx:
-            continue                      # scalar field — untouched
+            continue                      # scalar field — untouched (also already excluded above)
         key = (fid, (sb.get("attr") or "").strip())
         by_doc.setdefault(r["document_id"], {}).setdefault(key, []).append(
             {**dict(r), "_sb": sb, "_idx": idx})
