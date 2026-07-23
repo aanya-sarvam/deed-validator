@@ -15,6 +15,7 @@ on local disk (the cache is just a cache — losing it on restart is fine).
 
 import json
 import os
+import re
 from pathlib import Path
 
 _client = None
@@ -150,36 +151,171 @@ def read_text_abs(abs_path):
     return blob.download_as_text()
 
 
-def _pages_for_reg_no(reg_no):
-    """Find {prefix, pages:[[page, image_rel_path], ...]} for one reg_no by
-    streaming ocr/ocr_dataset.jsonl line-by-line, without ever holding the
-    whole dataset (or any other deed's entries) in memory.
+_PAGE_NUM_RE = re.compile(r"(\d+)(?=\.\w+$)")
 
-    This replaces an earlier design that built ONE big reg_no -> pages dict
-    for the entire raw dataset and kept it resident for the process's
+
+def _pages_via_probe(reg_no, max_pages=60, max_consecutive_misses=5):
+    """Fallback page-discovery method for when 'list' permission isn't
+    available (confirmed to be the case here): guess sequential filenames
+    matching the confirmed page_NNN.jpg naming convention
+    ({prefix}/grounding/images/{reg_no}/page_NNN.jpg, 3-digit zero-padded,
+    1-indexed) and check each one's existence individually.
+    blob.exists() is a metadata check on a KNOWN path — it only needs
+    'storage.objects.get' (read), not 'storage.objects.list' — so this
+    finds every real page file without ever listing the folder. This is
+    ground truth the same way listing would be: it doesn't matter whether
+    ocr_dataset.jsonl has an entry for a page or not, only whether the file
+    is actually there.
+
+    Stops after several consecutive misses (so a short document doesn't
+    cost 60 checks), but tolerates a few isolated gaps rather than stopping
+    at the very first missing page number, in case a page was skipped or
+    renamed."""
+    bucket = _get_bucket()
+    for prefix in raw_prefixes():
+        found = []
+        misses = 0
+        pg = 1
+        while pg <= max_pages and misses < max_consecutive_misses:
+            rel = f"grounding/images/{reg_no}/page_{pg:03d}.jpg"
+            try:
+                exists = bucket.blob(f"{prefix}/{rel}").exists()
+            except Exception as e:
+                print(f"[gcs-raw] probe failed {prefix}/{rel}: {e}")
+                break
+            if exists:
+                found.append([pg, prefix, rel])
+                misses = 0
+            else:
+                misses += 1
+            pg += 1
+        if found:
+            return {"pages": found}
+    return None
+
+
+def _pages_via_listing(reg_no):
+    """Primary page-discovery method: list the reg_no's image folder
+    directly (confirmed layout: {prefix}/grounding/images/{reg_no}/page_NNN.jpg)
+    instead of trusting ocr_dataset.jsonl to enumerate pages. This is the
+    ground truth — it doesn't matter whether OCR ran on every page or
+    whether the JSONL has an entry for each one; if the file is sitting in
+    the folder, it counts. Needs 'storage.objects.list' on the service
+    account; returns None (not an error) if that's unavailable or the
+    folder doesn't exist under this prefix, so the caller can fall back to
+    the JSONL-based scan."""
+    bucket = _get_bucket()
+    combined = {}
+    any_listable = False
+    for prefix in raw_prefixes():
+        folder = f"{prefix}/grounding/images/{reg_no}/"
+        try:
+            blobs = list(bucket.list_blobs(prefix=folder))
+        except Exception as e:
+            print(f"[gcs-raw] could not list {folder}: {e}")
+            continue
+        any_listable = True
+        for b in blobs:
+            name = b.name[len(folder):]
+            if not name or name.endswith("/"):
+                continue
+            m = _PAGE_NUM_RE.search(name)
+            if not m:
+                continue
+            pg = int(m.group(1))
+            rel = f"grounding/images/{reg_no}/{name}"
+            if pg not in combined:
+                combined[pg] = (prefix, rel)
+    if not any_listable or not combined:
+        return None
+    pages = sorted(
+        ([pg, prefix, rel] for pg, (prefix, rel) in combined.items()),
+        key=lambda x: x[0])
+    return {"pages": pages}
+
+
+def _pages_for_reg_no(reg_no):
+    """Find pages:[[page, prefix, image_rel_path], ...] for one reg_no.
+    Three-tier fallback, each one ground-truth (independent of whether
+    ocr_dataset.jsonl has an entry for a given page), tried in order:
+      1. _pages_via_listing  — list the folder directly (needs 'list'
+         permission on the service account).
+      2. _pages_via_probe    — no 'list' needed: guess sequential
+         page_NNN.jpg filenames and check each one's existence
+         individually. This is what actually runs in this deployment,
+         since the service account here only has read/get, not list.
+      3. JSONL scan (below)  — last resort if neither of the above finds
+         anything (e.g. a batch whose images live under a different path
+         than the confirmed grounding/images/<reg_no>/ convention).
+    Either way, never holds a whole dataset (or any other deed's entries)
+    in memory.
+
+    Why fall back to the JSONL scan at all, instead of only listing: some
+    deployments' service accounts may only have read/get permission (not
+    list), or the images for a given batch might live under a different
+    path than the confirmed grounding/images/<reg_no>/ layout — in either
+    case listing silently returns nothing useful and we still want an
+    answer from the JSONL rather than reporting no pages at all.
+
+    IMPORTANT (JSONL fallback only): this checks ALL configured raw
+    prefixes and merges whatever pages each one has for this reg_no — it
+    does NOT stop at the first prefix with a match. A deed's pages can be
+    split across more than one ingested batch (e.g. an earlier ~5k-doc
+    batch and a later ~5k-doc batch both containing entries for
+    overlapping reg_nos, each with a different subset of that deed's
+    pages). An earlier version returned as soon as it found ANY pages in
+    the first prefix it checked, which silently served a partial page set
+    (e.g. 3 of 6, or 6 of 10) with no error at all — indistinguishable from
+    a correctly-loaded short document. But even merging all prefixes, the
+    JSONL scan can still under-report if the JSONL itself doesn't have an
+    entry for every image file that actually exists — which is exactly
+    why the folder listing above is tried first.
+
+    This also replaces an earlier design that built ONE big reg_no -> pages
+    dict for the entire raw dataset and kept it resident for the process's
     lifetime, cached to a JSON file on local disk to avoid rebuilding it
     every time. That disk cache lives on Render's local filesystem, which is
     wiped on every deploy — so after any redeploy, the very first raw PDF
     view had to re-download and json-parse the *entire* ocr_dataset.jsonl
     (across every raw prefix) into memory in one shot before it could look
     up a single deed. With ~10k+ documents behind it, that one-time rebuild
-    was almost certainly the actual trigger for the OOM restarts, separate
-    from (and larger than) the per-document image-stitch fix already
-    shipped. Streaming + caching only the tiny per-deed result keeps peak
-    memory to roughly this one deed's page list, regardless of dataset size,
-    at the cost of a network scan on a not-yet-cached deed's first view."""
+    was almost certainly a trigger for earlier OOM restarts. Streaming +
+    caching only the tiny per-deed result keeps peak memory to roughly this
+    one deed's page list, regardless of dataset size, at the cost of a
+    network scan (now across all prefixes) on a not-yet-cached deed's first
+    view."""
     cache_file = Path("static/.raw_pages") / f"{reg_no}.json"
     if cache_file.exists():
         try:
             return json.loads(cache_file.read_text())
         except Exception:
             pass
+
+    listed = _pages_via_listing(reg_no)
+    if listed:
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(listed))
+        except Exception:
+            pass
+        return listed
+
+    probed = _pages_via_probe(reg_no)
+    if probed:
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(probed))
+        except Exception:
+            pass
+        return probed
+
     bucket = _get_bucket()
+    combined = {}   # page_num -> (prefix, image_rel_path); first prefix to
+                    # report a given page number wins if it's ever duplicated
     for prefix in raw_prefixes():
         blob = bucket.blob(f"{prefix}/ocr/ocr_dataset.jsonl")
         if not blob.exists():
             continue
-        pages = []
         try:
             with blob.open("rt") as fh:   # streams from GCS; no full-text buffer
                 for line in fh:
@@ -191,20 +327,24 @@ def _pages_for_reg_no(reg_no):
                     except json.JSONDecodeError:
                         continue
                     if str(o.get("reg_no") or "") == reg_no and o.get("image"):
-                        pages.append([o.get("page", 0), o.get("image")])
+                        pg = o.get("page", 0)
+                        if pg not in combined:
+                            combined[pg] = (prefix, o.get("image"))
         except Exception as e:
             print(f"[gcs-raw] scan failed for {prefix}: {e}")
             continue
-        if pages:
-            pages.sort(key=lambda x: x[0] or 0)
-            result = {"prefix": prefix, "pages": pages}
-            try:
-                cache_file.parent.mkdir(parents=True, exist_ok=True)
-                cache_file.write_text(json.dumps(result))
-            except Exception:
-                pass
-            return result
-    return None
+    if not combined:
+        return None
+    pages = sorted(
+        ([pg, prefix, rel] for pg, (prefix, rel) in combined.items()),
+        key=lambda x: x[0] or 0)
+    result = {"pages": pages}
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(result))
+    except Exception:
+        pass
+    return result
 
 
 def premade_pdf_exists(reg_no):
@@ -231,17 +371,19 @@ def fetch_page_image(reg_no, page_num, cache_dir="static/scans/pages"):
     entry = _pages_for_reg_no(reg_no)
     if not entry:
         return None, None
-    match = next((rel for pg, rel in entry["pages"] if str(pg) == str(page_num)), None)
+    match = next(((prefix, rel) for pg, prefix, rel in entry["pages"]
+                  if str(pg) == str(page_num)), None)
     if not match:
         return None, None
+    prefix, rel = match
     cache = Path(cache_dir) / reg_no
-    ext = Path(match).suffix or ".jpg"
+    ext = Path(rel).suffix or ".jpg"
     local = cache / f"{page_num}{ext}"
     if local.exists() and local.stat().st_size > 0:
         data = local.read_bytes()
         return data, _content_type(data[:8])
     bucket = _get_bucket()
-    blob = bucket.blob(f"{entry['prefix']}/{match}")
+    blob = bucket.blob(f"{prefix}/{rel}")
     if not blob.exists():
         return None, None
     data = blob.download_as_bytes()

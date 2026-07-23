@@ -589,7 +589,7 @@ def get_pages(doc_id: int, user=Depends(current_user)):
             # rather than generating its own 1..count sequence (which was
             # producing 404s — and blank space, not a visible error — for
             # any deed whose numbering didn't happen to match).
-            page_nums = [pg for pg, _rel in entry["pages"]]
+            page_nums = [pg for pg, _prefix, _rel in entry["pages"]]
             return {"mode": "images", "pages": page_nums}
     raise HTTPException(404, "No scan attached to this deed")
 
