@@ -919,6 +919,18 @@ function renderDoc(d) {
   $('btn-flag').style.display = (reviewing || flagged) ? 'none' : '';
   $('btn-unflag').style.display = flagged ? '' : 'none';
   $('pdfbar').textContent = doc.pdf_file ? `${doc.pdf_file} — original scan` : 'No scan file';
+  if (doc.pdf_file) {
+    // Show this immediately (synchronously), before the async /pages +
+    // page-image fetches resolve — a first-time fetch (cold GCS lookup,
+    // or a raw deed's page images not yet cached locally) can take a few
+    // seconds, and without this the pane looked identical to "genuinely no
+    // scan" the whole time it was loading, which is exactly what made a
+    // slow-loading deed indistinguishable from a broken one.
+    $('pdfframe').style.display = 'none';
+    $('pageimages').style.display = 'none';
+    $('nopdf').style.display = 'flex';
+    $('nopdf').textContent = 'Loading scan…';
+  }
   showScan(doc);
 
   const pane = $('formpane'); pane.innerHTML = '';
