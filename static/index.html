@@ -202,6 +202,12 @@
   #pdfpane .bar { padding: 6px 14px; font-size: 0.8333rem; color: var(--muted);
                   border-bottom: 1px solid var(--line); background: var(--card); }
   #pdfframe { flex: 1; border: 0; width: 100%; background: #3a3d42; }
+  #pageimages { flex: 1; display: none; overflow-y: auto; background: #3a3d42;
+    padding: 10px; box-sizing: border-box; }
+  #pageimages img { display: block; width: 100%; margin: 0 auto 10px; background: #fff;
+    box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+  #pageimages .pageno { text-align: center; font-size: 0.7333rem; color: var(--muted);
+    margin: -4px 0 10px; }
   #nopdf { flex: 1; display: none; align-items: center; justify-content: center; color: var(--muted); }
   .vfoot { display: flex; align-items: center; gap: 10px; padding: 10px 18px;
     background: var(--card); border-top: 1px solid var(--line); }
@@ -413,6 +419,7 @@
       <div id="pdfpane">
         <div class="bar" id="pdfbar"></div>
         <iframe id="pdfframe" title="Scanned document"></iframe>
+        <div id="pageimages"></div>
         <div id="nopdf">No scan attached to this document — validate from metadata or flag it.</div>
       </div>
     </div>
@@ -824,6 +831,48 @@ async function saveDigitized() {
   } catch (e) { $('textsave').textContent = 'Save failed: ' + e.message; }
 }
 
+function hideScan() {
+  $('pdfframe').style.display = 'none';
+  $('pageimages').style.display = 'none';
+  $('nopdf').style.display = 'flex';
+}
+
+async function showScan(doc) {
+  if (!doc.pdf_file) { hideScan(); return; }
+  let info;
+  try {
+    info = await api(`/documents/${doc.id}/pages`);
+  } catch (e) {
+    hideScan();
+    return;
+  }
+  if (info.mode === 'pdf') {
+    $('pageimages').style.display = 'none';
+    $('pdfframe').style.display = ''; $('nopdf').style.display = 'none';
+    $('pdfframe').src = `/api/documents/${doc.id}/pdf?token=${TOKEN}`;
+    return;
+  }
+  if (info.mode === 'images' && info.count > 0) {
+    $('pdfframe').style.display = 'none'; $('pdfframe').src = '';
+    $('nopdf').style.display = 'none';
+    const wrap = $('pageimages'); wrap.style.display = ''; wrap.innerHTML = '';
+    // Requested one at a time and rendered as a plain scrollable sequence —
+    // the server never assembles these into a PDF, so it only ever holds
+    // one page's bytes in memory per request instead of the whole deed.
+    for (let n = 1; n <= info.count; n++) {
+      const img = document.createElement('img');
+      img.loading = 'lazy';
+      img.alt = `Page ${n}`;
+      img.src = `/api/documents/${doc.id}/page/${n}?token=${TOKEN}`;
+      const label = document.createElement('div'); label.className = 'pageno';
+      label.textContent = `Page ${n} of ${info.count}`;
+      wrap.appendChild(img); wrap.appendChild(label);
+    }
+    return;
+  }
+  hideScan();
+}
+
 function renderDoc(d) {
   DOC = d; dirty = 0;
   showTask('meta');
@@ -848,10 +897,7 @@ function renderDoc(d) {
   $('btn-flag').style.display = (reviewing || flagged) ? 'none' : '';
   $('btn-unflag').style.display = flagged ? '' : 'none';
   $('pdfbar').textContent = doc.pdf_file ? `${doc.pdf_file} — original scan` : 'No scan file';
-  if (doc.pdf_file) {
-    $('pdfframe').style.display = ''; $('nopdf').style.display = 'none';
-    $('pdfframe').src = `/api/documents/${doc.id}/pdf?token=${TOKEN}`;
-  } else { $('pdfframe').style.display = 'none'; $('nopdf').style.display = 'flex'; }
+  showScan(doc);
 
   const pane = $('formpane'); pane.innerHTML = '';
   if (editable && doc.status === 'flagged') {

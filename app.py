@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from fastapi import FastAPI, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -535,11 +535,14 @@ def get_pdf(doc_id: int, user=Depends(current_user)):
         raise HTTPException(404, "No scan attached to this deed")
     path = Path("static/scans") / doc["pdf_file"]
     if not path.exists():
-        # stream from GCS on first view (and cache locally) if configured
+        # Only ever fetches a pre-made <reg_no>.pdf (a plain download, cheap).
+        # Deeds with no pre-made PDF are served via /pages + /page/{n} below
+        # instead — we no longer stitch a PDF from raw page images here at
+        # all, which is what used to spike memory on this route.
         import gcs_store
         if gcs_store.enabled():
             try:
-                fetched = gcs_store.fetch_or_build_pdf(doc["deed_number"])
+                fetched = gcs_store.fetch_pdf(doc["deed_number"])
                 if fetched:
                     path = fetched
             except Exception as e:
@@ -547,6 +550,54 @@ def get_pdf(doc_id: int, user=Depends(current_user)):
     if not path.exists():
         raise HTTPException(404, "Scan file missing")
     return FileResponse(path, media_type="application/pdf")
+
+
+@app.get("/api/documents/{doc_id}/pages")
+def get_pages(doc_id: int, user=Depends(current_user)):
+    """Tell the frontend how to show this deed's scan: a single pre-made PDF
+    (mode 'pdf', served as-is via /pdf above — cheap, just a file download),
+    or a sequence of individually-served page images (mode 'images') for
+    deeds that have no pre-made PDF. We deliberately never build a PDF from
+    raw page images anymore — the browser just lays out the images in order,
+    which is simpler and means the server never holds more than one page's
+    bytes in memory at a time."""
+    with connect() as con:
+        doc = con.execute("SELECT deed_number, pdf_file FROM documents WHERE id = %s",
+                          (doc_id,)).fetchone()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    if doc["pdf_file"]:
+        local = Path("static/scans") / doc["pdf_file"]
+        if local.exists():
+            return {"mode": "pdf"}
+        import gcs_store
+        if gcs_store.enabled() and gcs_store.premade_pdf_exists(doc["deed_number"]):
+            return {"mode": "pdf"}
+    import gcs_store
+    if gcs_store.enabled():
+        entry = gcs_store.pages_entry(doc["deed_number"])
+        if entry:
+            return {"mode": "images", "count": len(entry["pages"])}
+    raise HTTPException(404, "No scan attached to this deed")
+
+
+@app.get("/api/documents/{doc_id}/page/{page_num}")
+def get_page_image(doc_id: int, page_num: int, user=Depends(current_user)):
+    """Serve a single raw scan page's image bytes directly — no PDF
+    assembly, no decode/re-encode. Cached to local disk per page so a
+    reopened deed doesn't re-hit GCS."""
+    with connect() as con:
+        doc = con.execute("SELECT deed_number FROM documents WHERE id = %s",
+                          (doc_id,)).fetchone()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    import gcs_store
+    if not gcs_store.enabled():
+        raise HTTPException(404, "No scan source configured")
+    data, content_type = gcs_store.fetch_page_image(doc["deed_number"], page_num)
+    if data is None:
+        raise HTTPException(404, "Page not found")
+    return Response(content=data, media_type=content_type)
 
 
 # ---------- full text (populated from Akshar's JSON on ingest; edited here) ----------

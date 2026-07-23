@@ -207,60 +207,55 @@ def _pages_for_reg_no(reg_no):
     return None
 
 
-def _is_jpeg(data):
-    return data[:2] == b"\xff\xd8"
+def premade_pdf_exists(reg_no):
+    """Cheap existence check (no download) for a pre-made <reg_no>.pdf."""
+    bucket = _get_bucket()
+    blob = bucket.blob(f"{_prefix()}{reg_no}/{reg_no}.pdf")
+    return blob.exists()
 
 
-def fetch_or_build_pdf(reg_no, cache_dir="static/scans"):
-    """Return a local PDF for reg_no: prefer a pre-made <reg_no>.pdf
-    (sample_1000-style batches, via fetch_pdf), else stitch one from that
-    deed's raw page images.
+def pages_entry(reg_no):
+    """Public wrapper around the per-deed page lookup, for callers that just
+    need to know whether/how many raw pages a deed has."""
+    return _pages_for_reg_no(reg_no)
 
-    Memory note: this used to open every page as a decoded PIL Image and
-    hold ALL of them in memory at once before saving — for a deed with many
-    full-resolution scanned pages that's a large multi-image spike per
-    request, and was a main driver of the OOM restarts (worse as the doc
-    count/traffic grew). Now each page is kept as its already-compressed
-    bytes (JPEG passed through untouched — no quality loss, no re-encode;
-    non-JPEG sources re-encoded once at quality=95 and the decoded pixels
-    freed immediately), and img2pdf embeds the compressed bytes directly
-    without a further decode/re-encode pass. Peak memory is now roughly
-    proportional to the compressed page sizes, not the decoded resolution
-    times the page count."""
-    p = fetch_pdf(reg_no, cache_dir)
-    if p:
-        return p
+
+def fetch_page_image(reg_no, page_num, cache_dir="static/scans/pages"):
+    """Return (bytes, content_type) for ONE page image of reg_no. Caches
+    that single page to local disk so re-viewing the same deed doesn't
+    re-hit GCS. Never loads any other page or deed into memory — this is
+    what replaced the old build-a-whole-PDF-per-deed approach: the frontend
+    now requests pages one at a time and displays them as a sequence of
+    images instead of a stitched document, so peak memory here is just this
+    one page's bytes, regardless of how many pages the deed has."""
     entry = _pages_for_reg_no(reg_no)
     if not entry:
-        return None
-    import img2pdf
-    from PIL import Image
-    import io
-
+        return None, None
+    match = next((rel for pg, rel in entry["pages"] if pg == page_num), None)
+    if not match:
+        return None, None
+    cache = Path(cache_dir) / reg_no
+    ext = Path(match).suffix or ".jpg"
+    local = cache / f"{page_num}{ext}"
+    if local.exists() and local.stat().st_size > 0:
+        data = local.read_bytes()
+        return data, _content_type(data[:8])
     bucket = _get_bucket()
-    prefix = entry["prefix"]
-    pages = entry["pages"]
-    page_bytes = []
-    for _page_no, rel in pages:
-        try:
-            blob = bucket.blob(f"{prefix}/{rel}")
-            if not blob.exists():
-                continue
-            data = blob.download_as_bytes()
-            if _is_jpeg(data):
-                page_bytes.append(data)   # already compressed — embed as-is
-            else:
-                with Image.open(io.BytesIO(data)) as im:
-                    buf = io.BytesIO()
-                    im.convert("RGB").save(buf, format="JPEG", quality=95)
-                    page_bytes.append(buf.getvalue())
-        except Exception as e:
-            print(f"[gcs-raw] page fetch failed {reg_no}/{rel}: {e}")
-    if not page_bytes:
-        return None
-    cache = Path(cache_dir)
-    cache.mkdir(parents=True, exist_ok=True)
-    local = cache / f"{reg_no}.pdf"
-    with open(local, "wb") as out:
-        out.write(img2pdf.convert(page_bytes))
-    return local
+    blob = bucket.blob(f"{entry['prefix']}/{match}")
+    if not blob.exists():
+        return None, None
+    data = blob.download_as_bytes()
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        local.write_bytes(data)
+    except Exception:
+        pass
+    return data, _content_type(data[:8])
+
+
+def _content_type(head):
+    if head[:2] == b"\xff\xd8":
+        return "image/jpeg"
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    return "application/octet-stream"

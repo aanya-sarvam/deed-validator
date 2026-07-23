@@ -371,12 +371,14 @@ def ingest_gcs_raw(init=True, progress=None):
     grounding/grounding_good_partial.jsonl and ocr/ocr_dataset.jsonl (under
     gcs_store.GCS_RAW_PREFIX, default 'ocr_outputs/orissa_deeds'), no local
     copies needed. Only ever does object READS on the bucket — never lists
-    or writes to it. PDFs are NOT built here: pdf_file is set to
-    '<reg_no>.pdf' whenever that deed has page images, and the actual PDF is
-    stitched from those pages on first view (gcs_store.fetch_or_build_pdf),
-    same lazy-download pattern ingest_gcs() already uses for pre-made PDFs.
-    Safe to re-run: existing deed_numbers are skipped, so this is exactly
-    how you add a new batch without resetting anything."""
+    or writes to it. pdf_file is set to '<reg_no>.pdf' whenever that deed
+    has page images, purely as a "this deed has a scan" flag (used for the
+    has_pdf column and the viewer's no-scan message) — no PDF is actually
+    built for these. The viewer instead serves the raw page images directly,
+    one request per page (gcs_store.fetch_page_image via /api/documents/
+    {id}/page/{n}), and displays them as a sequence in the browser. Safe to
+    re-run: existing deed_numbers are skipped, so this is exactly how you
+    add a new batch without resetting anything."""
     import gcs_store
     if init:
         init_db()
