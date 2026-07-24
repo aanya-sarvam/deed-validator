@@ -121,6 +121,10 @@ def _auto_ingest():
                         m = merge_existing_party_fields(con)
                         if m:
                             print(f"[startup] merged party fields on {m} documents", flush=True)
+                    from ingest_json import backfill_book1_consideration
+                    b1 = backfill_book1_consideration(con)
+                    if b1:
+                        print(f"[startup] backfilled Consideration Amount on {b1} Book 1 documents", flush=True)
                     _ingest_status.update(state="done", documents=n, detail="already loaded")
                     _repair_scans(con)
                     print(f"[startup] already loaded — {n} documents", flush=True)

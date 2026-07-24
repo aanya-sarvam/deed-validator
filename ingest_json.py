@@ -100,6 +100,38 @@ def _merge_enabled():
     return os.environ.get("MERGE_PARTY_FIELDS", "1").lower() not in ("0", "false", "no")
 
 
+def _is_book1(book_label):
+    """Flexible match for Book 1 (Indian land-registry convention: Book 1 =
+    deeds of sale/conveyance — the type that always has a sale
+    consideration). Source data has been seen with varying formats
+    ('Book 1', 'Book-1', 'Book I', ...), so this normalizes (strip
+    non-alphanumerics, lowercase) rather than requiring one exact string."""
+    if not book_label:
+        return False
+    norm = re.sub(r"[^a-z0-9]", "", str(book_label).lower())
+    return norm in ("book1", "booki", "bk1", "bki")
+
+
+def _ensure_consideration_amount(rows, g):
+    """Book 1 deeds should always have a Consideration Amount field for
+    reviewers to check — if the source data didn't extract one (missing
+    from OCR/grounding), add it with a default of '0' rather than leaving
+    it absent entirely, so it's always visible and editable."""
+    if not _is_book1(g.get("book_label")):
+        return rows
+    if any("consideration" in (r.get("label") or "").lower() for r in rows):
+        return rows
+    return rows + [{
+        "section": "Deed details",
+        "label": "Consideration Amount",
+        "english": "0",
+        "odia": "0",
+        "src_block": {"id": "consideration_amount", "field": "Consideration Amount",
+                      "auto_defaulted": True},
+        "page": None,
+    }]
+
+
 def _build_field_rows(fields):
     """Turn grounding fields into portal field rows.
 
@@ -278,7 +310,8 @@ def _insert_from_grounding(con, g, full_text, pdf_name):
          "ready" if full_text else "not_started",
          json.dumps(src_meta))).fetchone()["id"]
     rows = []
-    for i, r in enumerate(_build_field_rows(g.get("fields", []))):
+    field_rows = _ensure_consideration_amount(_build_field_rows(g.get("fields", [])), g)
+    for i, r in enumerate(field_rows):
         rows.append((doc_id, r["section"], r["label"], r["english"], r["english"],
                      r["odia"], len(r["english"]) > 60, i, "text",
                      (r["src_block"].get("id") if isinstance(r["src_block"], dict) else None),
@@ -554,3 +587,47 @@ def merge_existing_party_fields(con):
             print(f"[merge] {migrated} documents migrated...", flush=True)
     con.commit()
     return migrated
+
+
+def backfill_book1_consideration(con):
+    """One-time backfill for documents ingested BEFORE the default-
+    Consideration-Amount rule existed: Book 1 deeds (sale/conveyance —
+    identified via src_meta->>'book_label', see _is_book1) missing a
+    Consideration Amount field get one added, defaulted to '0'.
+
+    Runs on every startup like the other migrations here, so the query
+    MUST stay filtered in SQL rather than pulling documents into Python to
+    check one at a time — once every Book 1 deed has been backfilled, this
+    returns an empty result set instantly on every later boot instead of
+    scanning the whole table (see merge_existing_party_fields for why that
+    distinction matters — an unfiltered full-table pull on every startup
+    was a real cause of repeat OOM restarts previously).
+    Returns number of documents backfilled."""
+    rows = con.execute(
+        "SELECT d.id, "
+        "  (SELECT COALESCE(MAX(f.position), -1) + 1 FROM fields f "
+        "   WHERE f.document_id = d.id) AS next_pos "
+        "FROM documents d "
+        "WHERE lower(regexp_replace(COALESCE(d.src_meta->>'book_label', ''), "
+        "      '[^a-zA-Z0-9]', '', 'g')) IN ('book1','booki','bk1','bki') "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM fields f WHERE f.document_id = d.id "
+        "  AND lower(f.label) LIKE '%consideration%'"
+        ")").fetchall()
+    if not rows:
+        return 0
+    src_block = json.dumps({"id": "consideration_amount",
+                             "field": "Consideration Amount", "auto_defaulted": True})
+    for i, r in enumerate(rows, 1):
+        con.execute(
+            "INSERT INTO fields (document_id, section, label, ocr_value, "
+            "current_value, odia_value, multiline, position, field_kind, "
+            "layout_tag, src_block, page_num) "
+            "VALUES (%s,'Deed details','Consideration Amount','0','0','0', "
+            "false,%s,'text','consideration_amount',%s,NULL)",
+            (r["id"], r["next_pos"], src_block))
+        if i % 200 == 0:
+            con.commit()
+            print(f"[book1-backfill] {i}/{len(rows)} documents backfilled...", flush=True)
+    con.commit()
+    return len(rows)

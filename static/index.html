@@ -200,11 +200,15 @@
   .party-subfield:first-of-type { margin-top: 6px; }
   textarea { resize: vertical; min-height: 54px; }
   #pdfpane .bar { padding: 6px 14px; font-size: 0.8333rem; color: var(--muted);
-                  border-bottom: 1px solid var(--line); background: var(--card); }
+                  border-bottom: 1px solid var(--line); background: var(--card);
+                  display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  #zoom-controls { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #zoom-controls button { min-width: 26px; }
+  #zoom-level { min-width: 40px; text-align: center; display: inline-block; }
   #pdfframe { flex: 1; border: 0; width: 100%; background: #3a3d42; }
-  #pageimages { flex: 1; display: none; overflow-y: auto; background: #3a3d42;
+  #pageimages { flex: 1; display: none; overflow: auto; background: #3a3d42;
     padding: 10px; box-sizing: border-box; }
-  #pageimages img { display: block; width: 100%; min-height: 120px; margin: 0 auto 10px;
+  #pageimages img { display: block; width: var(--scan-zoom, 100%); min-height: 120px; margin: 0 auto 10px;
     background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
   #pageimages .pageno { text-align: center; font-size: 0.7333rem; color: var(--muted);
     margin: -4px 0 10px; }
@@ -417,7 +421,15 @@
       </div>
       <div class="divider" id="divider"></div>
       <div id="pdfpane">
-        <div class="bar" id="pdfbar"></div>
+        <div class="bar" id="pdfbar">
+          <span id="pdfbar-label"></span>
+          <span id="zoom-controls" style="display:none">
+            <button type="button" class="small" id="zoom-out" title="Zoom out">−</button>
+            <span id="zoom-level">100%</span>
+            <button type="button" class="small" id="zoom-in" title="Zoom in">+</button>
+            <button type="button" class="small" id="zoom-reset" title="Reset zoom">Reset</button>
+          </span>
+        </div>
         <iframe id="pdfframe" title="Scanned document"></iframe>
         <div id="pageimages"></div>
         <div id="nopdf">No scan attached to this document — validate from metadata or flag it.</div>
@@ -838,10 +850,25 @@ async function saveDigitized() {
   } catch (e) { $('textsave').textContent = 'Save failed: ' + e.message; }
 }
 
+let scanZoom = 100;
+function applyZoom() {
+  $('pageimages').style.setProperty('--scan-zoom', scanZoom + '%');
+  $('zoom-level').textContent = scanZoom + '%';
+}
+function resetZoom() { scanZoom = 100; applyZoom(); }
+$('zoom-in').addEventListener('click', () => {
+  scanZoom = Math.min(300, scanZoom + 25); applyZoom();
+});
+$('zoom-out').addEventListener('click', () => {
+  scanZoom = Math.max(50, scanZoom - 25); applyZoom();
+});
+$('zoom-reset').addEventListener('click', resetZoom);
+
 function hideScan(message) {
   $('pdfframe').style.display = 'none';
   $('pageimages').style.display = 'none';
   $('nopdf').style.display = 'flex';
+  $('zoom-controls').style.display = 'none';
   $('nopdf').textContent = message ||
     'No scan attached to this document — validate from metadata or flag it.';
 }
@@ -857,6 +884,7 @@ async function showScan(doc) {
   }
   if (info.mode === 'pdf') {
     $('pageimages').style.display = 'none';
+    $('zoom-controls').style.display = 'none';
     $('pdfframe').style.display = ''; $('nopdf').style.display = 'none';
     $('pdfframe').src = `/api/documents/${doc.id}/pdf?token=${TOKEN}`;
     return;
@@ -864,6 +892,8 @@ async function showScan(doc) {
   if (info.mode === 'images' && info.pages && info.pages.length > 0) {
     $('pdfframe').style.display = 'none'; $('pdfframe').src = '';
     $('nopdf').style.display = 'none';
+    resetZoom();
+    $('zoom-controls').style.display = '';
     const wrap = $('pageimages'); wrap.style.display = 'block'; wrap.innerHTML = '';
     // Requested one at a time (using the ACTUAL page numbers from the
     // backend, not an assumed 1..count range — the dataset's numbering
@@ -918,7 +948,7 @@ function renderDoc(d) {
   $('btn-skip').style.display = reviewing ? 'none' : '';
   $('btn-flag').style.display = (reviewing || flagged) ? 'none' : '';
   $('btn-unflag').style.display = flagged ? '' : 'none';
-  $('pdfbar').textContent = doc.pdf_file ? `${doc.pdf_file} — original scan` : 'No scan file';
+  $('pdfbar-label').textContent = doc.pdf_file ? `${doc.pdf_file} — original scan` : 'No scan file';
   if (doc.pdf_file) {
     // Show this immediately (synchronously), before the async /pages +
     // page-image fetches resolve — a first-time fetch (cold GCS lookup,
