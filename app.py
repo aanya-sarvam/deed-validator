@@ -125,6 +125,10 @@ def _auto_ingest():
                     b1 = backfill_book1_consideration(con)
                     if b1:
                         print(f"[startup] backfilled Consideration Amount on {b1} Book 1 documents", flush=True)
+                    from ingest_json import reposition_consideration_amount
+                    rp = reposition_consideration_amount(con)
+                    if rp:
+                        print(f"[startup] repositioned {rp} mis-placed Consideration Amount field(s)", flush=True)
                     _ingest_status.update(state="done", documents=n, detail="already loaded")
                     _repair_scans(con)
                     print(f"[startup] already loaded — {n} documents", flush=True)
@@ -1241,6 +1245,32 @@ def create_user(body: NewUser, user=Depends(require_admin)):
             con.commit()
         except Exception:
             raise HTTPException(409, "Username already exists")
+    return {"ok": True}
+
+
+class AdminPasswordReset(BaseModel):
+    new_password: str
+
+
+@app.post("/api/users/{user_id}/reset-password")
+def admin_reset_password(user_id: int, body: AdminPasswordReset, user=Depends(require_admin)):
+    """Admin-only: set a new password for a locked-out user, without
+    needing their old one (unlike the self-service /change-password,
+    which requires it). Only the password changes — username, role,
+    document assignments, validation history, and everything else about
+    the account is untouched. Existing sessions for that user are ended,
+    so the reset takes effect immediately rather than leaving an old
+    logged-in session usable until it expires on its own."""
+    if len(body.new_password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    with connect() as con:
+        target = con.execute("SELECT id FROM users WHERE id=%s", (user_id,)).fetchone()
+        if not target:
+            raise HTTPException(404, "User not found")
+        con.execute("UPDATE users SET password_hash=%s WHERE id=%s",
+                    (hash_pw(body.new_password), user_id))
+        con.execute("DELETE FROM sessions WHERE user_id=%s", (user_id,))
+        con.commit()
     return {"ok": True}
 
 

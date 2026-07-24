@@ -1710,9 +1710,19 @@ async function loadUsers() {
     const del = u.id !== UID
       ? `<button class="small danger" onclick="deleteUser(${u.id}, '${u.username}')">Delete</button>`
       : '<span style="color:var(--muted);font-size: 0.8rem">you</span>';
+    const reset = `<button class="small" onclick="resetUserPassword(${u.id}, '${u.username}')">Reset password</button>`;
     return `<tr><td class="mono">${u.username}</td><td>${u.full_name}</td>
-      <td>${u.role}</td><td>${u.validated}</td><td>${del}</td></tr>`;
+      <td>${u.role}</td><td>${u.validated}</td><td>${reset} ${del}</td></tr>`;
   }).join('');
+}
+async function resetUserPassword(id, uname) {
+  const pw = prompt(`Set a new password for "${uname}" (at least 6 characters).\n\nTheir account, role, assignments, and history are unaffected — only the password changes, and they'll need to log in again with this new password.`);
+  if (pw === null) return;          // cancelled
+  if (pw.length < 6) { alert('Password must be at least 6 characters.'); return; }
+  try {
+    await api(`/users/${id}/reset-password`, { method: 'POST', body: JSON.stringify({ new_password: pw }) });
+    alert(`Password reset for "${uname}". Share the new password with them directly.`);
+  } catch (e) { alert(e.message); }
 }
 async function deleteUser(id, uname) {
   if (!confirm(`Delete account "${uname}"?\n\nTheir in-progress and assigned documents return to the pool. Validated work stays but is no longer attributed to them. This cannot be undone.`)) return;

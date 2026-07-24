@@ -684,3 +684,48 @@ def backfill_book1_consideration(con):
             print(f"[book1-backfill] {i}/{len(rows)} documents backfilled...", flush=True)
     con.commit()
     return len(rows)
+
+
+def reposition_consideration_amount(con):
+    """One-time repositioning fix for documents already backfilled by an
+    EARLIER, buggy version of backfill_book1_consideration /
+    _ensure_consideration_amount, which appended the auto-added
+    Consideration Amount field after ALL other fields — including any
+    Sellers/Buyers/Property sections — instead of within Deed details.
+    That's fixed for anything processed from now on, but
+    backfill_book1_consideration is idempotent (skips documents that
+    already have ANY Consideration Amount field), so it won't repair
+    already-backfilled documents on its own — this migration does that
+    specifically.
+
+    Only ever touches fields we auto-added ourselves
+    (layout_tag='consideration_amount' AND src_block auto_defaulted=true)
+    — a genuinely OCR-extracted Consideration Amount field is never moved.
+    Returns number of fields repositioned."""
+    rows = con.execute(
+        "SELECT f.id AS field_id, f.document_id, f.position AS cur_pos, "
+        "  (SELECT MIN(f2.position) FROM fields f2 "
+        "   WHERE f2.document_id = f.document_id AND f2.section != 'Deed details') AS first_other_pos, "
+        "  (SELECT COALESCE(MAX(f3.position), -1) + 1 FROM fields f3 "
+        "   WHERE f3.document_id = f.document_id AND f3.section = 'Deed details' "
+        "   AND f3.id != f.id) AS correct_pos "
+        "FROM fields f "
+        "WHERE f.layout_tag = 'consideration_amount' "
+        "AND (f.src_block->>'auto_defaulted') = 'true'"
+    ).fetchall()
+    to_fix = [r for r in rows
+              if r["first_other_pos"] is not None and r["cur_pos"] > r["first_other_pos"]]
+    if not to_fix:
+        return 0
+    for i, r in enumerate(to_fix, 1):
+        con.execute(
+            "UPDATE fields SET position = position + 1 "
+            "WHERE document_id = %s AND position >= %s AND id != %s",
+            (r["document_id"], r["correct_pos"], r["field_id"]))
+        con.execute("UPDATE fields SET position = %s WHERE id = %s",
+                    (r["correct_pos"], r["field_id"]))
+        if i % 200 == 0:
+            con.commit()
+            print(f"[consideration-reposition] {i}/{len(to_fix)} fixed...", flush=True)
+    con.commit()
+    return len(to_fix)
