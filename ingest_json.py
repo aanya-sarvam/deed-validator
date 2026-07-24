@@ -100,16 +100,33 @@ def _merge_enabled():
     return os.environ.get("MERGE_PARTY_FIELDS", "1").lower() not in ("0", "false", "no")
 
 
-def _is_book1(book_label):
-    """Flexible match for Book 1 (Indian land-registry convention: Book 1 =
-    deeds of sale/conveyance — the type that always has a sale
-    consideration). Source data has been seen with varying formats
-    ('Book 1', 'Book-1', 'Book I', ...), so this normalizes (strip
-    non-alphanumerics, lowercase) rather than requiring one exact string."""
-    if not book_label:
-        return False
-    norm = re.sub(r"[^a-z0-9]", "", str(book_label).lower())
-    return norm in ("book1", "booki", "bk1", "bki")
+# Deed categories confirmed so far to belong to Book 1 (the register of
+# documents that transfer/create rights in immovable property — sale,
+# gift, mortgage, exchange, partition, lease under the Indian Registration
+# Act). Matched against EITHER book_label or deed_type since both have been
+# observed to carry this category name in the real source data (e.g.
+# book_label="SALE", deed_type="SALE IMMOVABLE"). Add more keywords here as
+# they're confirmed (e.g. "gift", "mortgage") — matching is substring,
+# case-insensitive, so "sale" also matches "SALE IMMOVABLE", "Sale Deed",
+# etc. without needing every exact variant listed.
+BOOK1_CATEGORY_KEYWORDS = {"sale"}
+
+
+def _is_book1(book_label, deed_type=None):
+    """Match Book 1 deeds by checking book_label and deed_type for any
+    confirmed Book 1 category keyword (see BOOK1_CATEGORY_KEYWORDS).
+    Originally this looked for literal 'Book 1' / 'Book I' text, based on
+    an assumption about the source data format — checking against the
+    actual data showed book_label instead holds a category name like
+    'SALE', not a book number, so matching had to change to category
+    keywords instead."""
+    for value in (book_label, deed_type):
+        if not value:
+            continue
+        norm = str(value).lower()
+        if any(kw in norm for kw in BOOK1_CATEGORY_KEYWORDS):
+            return True
+    return False
 
 
 def _ensure_consideration_amount(rows, g):
@@ -117,7 +134,7 @@ def _ensure_consideration_amount(rows, g):
     reviewers to check — if the source data didn't extract one (missing
     from OCR/grounding), add it with a default of '0' rather than leaving
     it absent entirely, so it's always visible and editable."""
-    if not _is_book1(g.get("book_label")):
+    if not _is_book1(g.get("book_label"), g.get("deed_type")):
         return rows
     if any("consideration" in (r.get("label") or "").lower() for r in rows):
         return rows
@@ -591,9 +608,14 @@ def merge_existing_party_fields(con):
 
 def backfill_book1_consideration(con):
     """One-time backfill for documents ingested BEFORE the default-
-    Consideration-Amount rule existed: Book 1 deeds (sale/conveyance —
-    identified via src_meta->>'book_label', see _is_book1) missing a
-    Consideration Amount field get one added, defaulted to '0'.
+    Consideration-Amount rule existed: Book 1 deeds (identified by
+    BOOK1_CATEGORY_KEYWORDS matching book_label or deed_type — see
+    _is_book1) missing a Consideration Amount field get one added,
+    defaulted to '0'.
+
+    The keyword list lives in ONE place (BOOK1_CATEGORY_KEYWORDS) and this
+    SQL filter is built from it directly, so this can never drift out of
+    sync with the Python-side _is_book1 check used at ingest time.
 
     Runs on every startup like the other migrations here, so the query
     MUST stay filtered in SQL rather than pulling documents into Python to
@@ -603,17 +625,25 @@ def backfill_book1_consideration(con):
     distinction matters — an unfiltered full-table pull on every startup
     was a real cause of repeat OOM restarts previously).
     Returns number of documents backfilled."""
+    conditions = []
+    params = []
+    for kw in BOOK1_CATEGORY_KEYWORDS:
+        conditions.append(
+            "(lower(COALESCE(d.src_meta->>'book_label','')) LIKE %s "
+            "OR lower(COALESCE(d.deed_type,'')) LIKE %s)")
+        params.extend([f"%{kw}%", f"%{kw}%"])
+    where_book1 = " OR ".join(conditions)
+    params.append("%consideration%")
     rows = con.execute(
         "SELECT d.id, "
         "  (SELECT COALESCE(MAX(f.position), -1) + 1 FROM fields f "
         "   WHERE f.document_id = d.id) AS next_pos "
         "FROM documents d "
-        "WHERE lower(regexp_replace(COALESCE(d.src_meta->>'book_label', ''), "
-        "      '[^a-zA-Z0-9]', '', 'g')) IN ('book1','booki','bk1','bki') "
+        f"WHERE ({where_book1}) "
         "AND NOT EXISTS ("
         "  SELECT 1 FROM fields f WHERE f.document_id = d.id "
-        "  AND lower(f.label) LIKE '%consideration%'"
-        ")").fetchall()
+        "  AND lower(f.label) LIKE %s"
+        ")", params).fetchall()
     if not rows:
         return 0
     src_block = json.dumps({"id": "consideration_amount",

@@ -567,7 +567,7 @@ def debug_meta(doc_id: int, user=Depends(current_user)):
     """
     with connect() as con:
         doc = con.execute(
-            "SELECT deed_number, src_meta FROM documents WHERE id = %s",
+            "SELECT deed_number, deed_type, src_meta FROM documents WHERE id = %s",
             (doc_id,)).fetchone()
     if not doc:
         raise HTTPException(404, "Document not found")
@@ -576,9 +576,32 @@ def debug_meta(doc_id: int, user=Depends(current_user)):
     book_label = src_meta.get("book_label") if isinstance(src_meta, dict) else None
     return {
         "deed_number": doc["deed_number"],
+        "deed_type": doc["deed_type"],
         "src_meta": src_meta,
         "book_label_value": book_label,
-        "is_book1_match": _is_book1(book_label),
+        "is_book1_match": _is_book1(book_label, doc["deed_type"]),
+    }
+
+
+@app.get("/api/debug/book-labels")
+def debug_book_labels(user=Depends(current_user)):
+    """List every distinct book_label AND deed_type value actually present
+    across the dataset, with counts — so the Book 1 classification mapping
+    can be built from the REAL vocabulary instead of an assumption. Call
+    from the browser console (no need to have any particular document
+    open):
+        api('/debug/book-labels').then(console.log)
+    """
+    with connect() as con:
+        book_labels = con.execute(
+            "SELECT src_meta->>'book_label' AS value, COUNT(*) AS n "
+            "FROM documents GROUP BY 1 ORDER BY n DESC").fetchall()
+        deed_types = con.execute(
+            "SELECT deed_type AS value, COUNT(*) AS n "
+            "FROM documents GROUP BY 1 ORDER BY n DESC").fetchall()
+    return {
+        "book_label_values": [dict(r) for r in book_labels],
+        "deed_type_values": [dict(r) for r in deed_types],
     }
 
 
