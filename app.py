@@ -556,6 +556,32 @@ def get_pdf(doc_id: int, user=Depends(current_user)):
     return FileResponse(path, media_type="application/pdf")
 
 
+@app.get("/api/documents/{doc_id}/debug-meta")
+def debug_meta(doc_id: int, user=Depends(current_user)):
+    """Inspect a document's raw src_meta (the catch-all JSON blob captured
+    from the source grounding data at ingest time) plus whether the Book 1
+    detection logic matches it. Exists so this can be checked from any
+    logged-in browser session — no Render Shell access needed. Call from
+    the browser console while a document is open:
+        api(`/documents/${DOC.document.id}/debug-meta`).then(console.log)
+    """
+    with connect() as con:
+        doc = con.execute(
+            "SELECT deed_number, src_meta FROM documents WHERE id = %s",
+            (doc_id,)).fetchone()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    from ingest_json import _is_book1
+    src_meta = doc["src_meta"] or {}
+    book_label = src_meta.get("book_label") if isinstance(src_meta, dict) else None
+    return {
+        "deed_number": doc["deed_number"],
+        "src_meta": src_meta,
+        "book_label_value": book_label,
+        "is_book1_match": _is_book1(book_label),
+    }
+
+
 @app.get("/api/documents/{doc_id}/pages")
 def get_pages(doc_id: int, user=Depends(current_user)):
     """Tell the frontend how to show this deed's scan: a single pre-made PDF
