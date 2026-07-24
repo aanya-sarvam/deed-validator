@@ -135,15 +135,19 @@ def _ensure_consideration_amount(rows, g):
     from OCR/grounding), add it with a default of '0' rather than leaving
     it absent entirely, so it's always visible and editable.
 
-    IMPORTANT: this must be inserted right after the last existing 'Deed
-    details' row, not appended to the very end of `rows`. Deed details
-    rows come first, followed by merged party-group rows (Sellers/Buyers/
-    Property) — appending at the very end would put this field AFTER those
-    party sections, and since the frontend starts a new section block every
-    time the section name changes as it walks fields in position order,
-    that created a second, separate 'Deed details' section far down the
-    page instead of the field showing up grouped with the rest of the
-    deed's metadata near the top."""
+    Inserted right after the 'Presentation date' field specifically —
+    matching where a genuinely-extracted Consideration Amount field
+    naturally sits in this data (Presentation date -> Consideration Amount
+    -> Old Reg No). Falls back to the end of the Deed details block only
+    if no Presentation date field exists for this deed. Simply appending
+    to the very end of `rows` was wrong for two reasons: Deed details rows
+    come first followed by merged party-group rows (Sellers/Buyers/
+    Property), so appending at the absolute end put the field AFTER those
+    party sections — splitting 'Deed details' into two separate blocks in
+    the viewer, since the frontend starts a new section every time the
+    section name changes while walking fields in position order; and even
+    appending at the end of just the Deed details block still didn't match
+    where this field naturally belongs relative to its neighbors."""
     if not _is_book1(g.get("book_label"), g.get("deed_type")):
         return rows
     if any("consideration" in (r.get("label") or "").lower() for r in rows):
@@ -157,10 +161,15 @@ def _ensure_consideration_amount(rows, g):
                       "auto_defaulted": True},
         "page": None,
     }
-    insert_at = 0
+    insert_at = None
     for i, r in enumerate(rows):
-        if r.get("section") == "Deed details":
+        if "presentation" in (r.get("label") or "").lower():
             insert_at = i + 1
+    if insert_at is None:
+        insert_at = 0
+        for i, r in enumerate(rows):
+            if r.get("section") == "Deed details":
+                insert_at = i + 1
     return rows[:insert_at] + [new_row] + rows[insert_at:]
 
 
@@ -648,11 +657,15 @@ def backfill_book1_consideration(con):
             "OR lower(COALESCE(d.deed_type,'')) LIKE %s)")
         params.extend([f"%{kw}%", f"%{kw}%"])
     where_book1 = " OR ".join(conditions)
-    params.append("%consideration%")
+    params = ["%presentation%"] + params + ["%consideration%"]
     rows = con.execute(
         "SELECT d.id, "
-        "  (SELECT COALESCE(MAX(f.position), -1) + 1 FROM fields f "
-        "   WHERE f.document_id = d.id AND f.section = 'Deed details') AS insert_pos "
+        "  COALESCE("
+        "    (SELECT f.position + 1 FROM fields f WHERE f.document_id = d.id "
+        "     AND lower(f.label) LIKE %s ORDER BY f.position DESC LIMIT 1), "
+        "    (SELECT COALESCE(MAX(f2.position), -1) + 1 FROM fields f2 "
+        "     WHERE f2.document_id = d.id AND f2.section = 'Deed details')"
+        "  ) AS insert_pos "
         "FROM documents d "
         f"WHERE ({where_book1}) "
         "AND NOT EXISTS ("
@@ -664,10 +677,11 @@ def backfill_book1_consideration(con):
     src_block = json.dumps({"id": "consideration_amount",
                              "field": "Consideration Amount", "auto_defaulted": True})
     for i, r in enumerate(rows, 1):
-        # Make room right after the last Deed details field, instead of
-        # tacking the new field onto the very end of the document (which
-        # would land it after any Sellers/Buyers/Property sections and
-        # split "Deed details" into two separate blocks in the viewer).
+        # Make room right after the Presentation date field (or end of Deed
+        # details as a fallback), instead of tacking the new field onto the
+        # very end of the document (which would land it after any Sellers/
+        # Buyers/Property sections and split "Deed details" into two
+        # separate blocks in the viewer).
         con.execute(
             "UPDATE fields SET position = position + 1 "
             "WHERE document_id = %s AND position >= %s",
@@ -689,14 +703,17 @@ def backfill_book1_consideration(con):
 def reposition_consideration_amount(con):
     """One-time repositioning fix for documents already backfilled by an
     EARLIER, buggy version of backfill_book1_consideration /
-    _ensure_consideration_amount, which appended the auto-added
-    Consideration Amount field after ALL other fields — including any
-    Sellers/Buyers/Property sections — instead of within Deed details.
-    That's fixed for anything processed from now on, but
-    backfill_book1_consideration is idempotent (skips documents that
-    already have ANY Consideration Amount field), so it won't repair
-    already-backfilled documents on its own — this migration does that
-    specifically.
+    _ensure_consideration_amount, which either appended the auto-added
+    Consideration Amount field after ALL other fields (including any
+    Sellers/Buyers/Property sections) or just at the end of the Deed
+    details block — instead of right after 'Presentation date', matching
+    where this field naturally sits (Presentation date -> Consideration
+    Amount -> Old Reg No). That placement is fixed for anything processed
+    from now on, but backfill_book1_consideration is idempotent (skips
+    documents that already have ANY Consideration Amount field), so it
+    won't repair already-backfilled documents on its own — this migration
+    does that specifically, moving them to the exact same target spot the
+    other two functions now use.
 
     Only ever touches fields we auto-added ourselves
     (layout_tag='consideration_amount' AND src_block auto_defaulted=true)
@@ -704,17 +721,19 @@ def reposition_consideration_amount(con):
     Returns number of fields repositioned."""
     rows = con.execute(
         "SELECT f.id AS field_id, f.document_id, f.position AS cur_pos, "
-        "  (SELECT MIN(f2.position) FROM fields f2 "
-        "   WHERE f2.document_id = f.document_id AND f2.section != 'Deed details') AS first_other_pos, "
-        "  (SELECT COALESCE(MAX(f3.position), -1) + 1 FROM fields f3 "
-        "   WHERE f3.document_id = f.document_id AND f3.section = 'Deed details' "
-        "   AND f3.id != f.id) AS correct_pos "
+        "  COALESCE("
+        "    (SELECT f2.position + 1 FROM fields f2 WHERE f2.document_id = f.document_id "
+        "     AND lower(f2.label) LIKE %s AND f2.id != f.id "
+        "     ORDER BY f2.position DESC LIMIT 1), "
+        "    (SELECT COALESCE(MAX(f3.position), -1) + 1 FROM fields f3 "
+        "     WHERE f3.document_id = f.document_id AND f3.section = 'Deed details' "
+        "     AND f3.id != f.id)"
+        "  ) AS correct_pos "
         "FROM fields f "
         "WHERE f.layout_tag = 'consideration_amount' "
-        "AND (f.src_block->>'auto_defaulted') = 'true'"
-    ).fetchall()
-    to_fix = [r for r in rows
-              if r["first_other_pos"] is not None and r["cur_pos"] > r["first_other_pos"]]
+        "AND (f.src_block->>'auto_defaulted') = 'true'",
+        ["%presentation%"]).fetchall()
+    to_fix = [r for r in rows if r["cur_pos"] != r["correct_pos"]]
     if not to_fix:
         return 0
     for i, r in enumerate(to_fix, 1):
