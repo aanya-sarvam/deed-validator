@@ -133,12 +133,22 @@ def _ensure_consideration_amount(rows, g):
     """Book 1 deeds should always have a Consideration Amount field for
     reviewers to check — if the source data didn't extract one (missing
     from OCR/grounding), add it with a default of '0' rather than leaving
-    it absent entirely, so it's always visible and editable."""
+    it absent entirely, so it's always visible and editable.
+
+    IMPORTANT: this must be inserted right after the last existing 'Deed
+    details' row, not appended to the very end of `rows`. Deed details
+    rows come first, followed by merged party-group rows (Sellers/Buyers/
+    Property) — appending at the very end would put this field AFTER those
+    party sections, and since the frontend starts a new section block every
+    time the section name changes as it walks fields in position order,
+    that created a second, separate 'Deed details' section far down the
+    page instead of the field showing up grouped with the rest of the
+    deed's metadata near the top."""
     if not _is_book1(g.get("book_label"), g.get("deed_type")):
         return rows
     if any("consideration" in (r.get("label") or "").lower() for r in rows):
         return rows
-    return rows + [{
+    new_row = {
         "section": "Deed details",
         "label": "Consideration Amount",
         "english": "0",
@@ -146,7 +156,12 @@ def _ensure_consideration_amount(rows, g):
         "src_block": {"id": "consideration_amount", "field": "Consideration Amount",
                       "auto_defaulted": True},
         "page": None,
-    }]
+    }
+    insert_at = 0
+    for i, r in enumerate(rows):
+        if r.get("section") == "Deed details":
+            insert_at = i + 1
+    return rows[:insert_at] + [new_row] + rows[insert_at:]
 
 
 def _build_field_rows(fields):
@@ -637,7 +652,7 @@ def backfill_book1_consideration(con):
     rows = con.execute(
         "SELECT d.id, "
         "  (SELECT COALESCE(MAX(f.position), -1) + 1 FROM fields f "
-        "   WHERE f.document_id = d.id) AS next_pos "
+        "   WHERE f.document_id = d.id AND f.section = 'Deed details') AS insert_pos "
         "FROM documents d "
         f"WHERE ({where_book1}) "
         "AND NOT EXISTS ("
@@ -649,13 +664,21 @@ def backfill_book1_consideration(con):
     src_block = json.dumps({"id": "consideration_amount",
                              "field": "Consideration Amount", "auto_defaulted": True})
     for i, r in enumerate(rows, 1):
+        # Make room right after the last Deed details field, instead of
+        # tacking the new field onto the very end of the document (which
+        # would land it after any Sellers/Buyers/Property sections and
+        # split "Deed details" into two separate blocks in the viewer).
+        con.execute(
+            "UPDATE fields SET position = position + 1 "
+            "WHERE document_id = %s AND position >= %s",
+            (r["id"], r["insert_pos"]))
         con.execute(
             "INSERT INTO fields (document_id, section, label, ocr_value, "
             "current_value, odia_value, multiline, position, field_kind, "
             "layout_tag, src_block, page_num) "
             "VALUES (%s,'Deed details','Consideration Amount','0','0','0', "
             "false,%s,'text','consideration_amount',%s,NULL)",
-            (r["id"], r["next_pos"], src_block))
+            (r["id"], r["insert_pos"], src_block))
         if i % 200 == 0:
             con.commit()
             print(f"[book1-backfill] {i}/{len(rows)} documents backfilled...", flush=True)
