@@ -1,0 +1,35 @@
+{
+  "summary": {
+    "1": {
+      "collected": 1031,
+      "probed": 40,
+      "info_missing": 0,
+      "scan_missing": 6,
+      "either_missing": 6,
+      "est_info": 0,
+      "est_scan": 155,
+      "est_either": 155
+    },
+    "3": {
+      "collected": 256,
+      "probed": 40,
+      "info_missing": 0,
+      "scan_missing": 0,
+      "either_missing": 0,
+      "est_info": 0,
+      "est_scan": 0,
+      "est_either": 0
+    },
+    "4": {
+      "collected": 770,
+      "probed": 40,
+      "info_missing": 0,
+      "scan_missing": 0,
+      "either_missing": 0,
+      "est_info": 0,
+      "est_scan": 0,
+      "est_either": 0
+    }
+  },
+  "note": "Mid-month GetDeedRegNoDetail 2000-2005. Info null rate among LISTED regs; GCS-only regs like 910010000401 are a separate missing class."
+}
