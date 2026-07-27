@@ -1,0 +1,52 @@
+{
+  "books": [
+    1,
+    3,
+    4
+  ],
+  "probed": 1,
+  "by_book": {
+    "1": {
+      "total": 1,
+      "missing_info": 1,
+      "missing_scan": 1,
+      "missing_info_or_scan": 1,
+      "missing_info_pct": 100.0,
+      "missing_scan_pct": 100.0
+    },
+    "3": {
+      "total": 0,
+      "missing_info": 0,
+      "missing_scan": 0,
+      "missing_info_or_scan": 0,
+      "missing_info_pct": 0,
+      "missing_scan_pct": 0
+    },
+    "4": {
+      "total": 0,
+      "missing_info": 0,
+      "missing_scan": 0,
+      "missing_info_or_scan": 0,
+      "missing_info_pct": 0,
+      "missing_scan_pct": 0
+    }
+  },
+  "missing_samples": [
+    {
+      "book_no": 1,
+      "registration_no": "910010000401",
+      "info_ok": false,
+      "scan_ok": false,
+      "scan_code": 2,
+      "scan_message": "Something went wrong!",
+      "gcs_book_label": "SALE",
+      "gcs_deed_type": "SALE IMMOVABLE"
+    }
+  ],
+  "missing_info_regs": [
+    "910010000401"
+  ],
+  "missing_scan_regs": [
+    "910010000401"
+  ]
+}

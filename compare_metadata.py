@@ -86,22 +86,22 @@ SCALAR_FIELDS = [
       "marketValue", "transactionValue", "ConsiderationAmount", "amount"),
      "consideration_amount"),
     ("old_reg_no",
-     ("oldRegNo", "old_reg_no", "oldRegistrationNo", "previousRegNo",
+     ("oldRegNo", "oldRegNO", "old_reg_no", "oldRegistrationNo", "previousRegNo",
       "OldRegNo"),
      "old_reg_no"),
 ]
 
 PARTY_API_KEYS = {
-    "seller": ("executant", "executants", "seller", "sellers", "firstParty",
-               "party1", "executantDetails", "sellerDetails", "Vendors",
+    "seller": ("sellerDetails", "executant", "executants", "seller", "sellers",
+               "firstParty", "party1", "executantDetails", "Vendors",
                "vendor", "transferor"),
-    "buyer": ("claimant", "claimants", "buyer", "buyers", "secondParty",
-              "party2", "claimantDetails", "buyerDetails", "Vendees",
+    "buyer": ("buyerDetails", "claimant", "claimants", "buyer", "buyers",
+              "secondParty", "party2", "claimantDetails", "Vendees",
               "vendee", "transferee"),
 }
 
 PROPERTY_API_KEYS = (
-    "property", "properties", "propertyDetails", "PropertyDetails",
+    "propertyDetails", "property", "properties", "PropertyDetails",
     "schedule", "schedules", "landDetails",
 )
 
@@ -332,21 +332,44 @@ def _name_from_party_row(row: dict) -> str:
         "claimantName", "firstName", "Name", default=""))
 
 
+def _names_from_party_blob(raw: Any) -> list[str]:
+    """IGR often returns parties as one long numbered string:
+    '1-NAME … ( RELATION : ) … ,2-NAME2 …'
+    Also accepts list/dict shapes.
+    """
+    names = []
+    if raw is None or raw == "":
+        return names
+    if isinstance(raw, str):
+        # Split on patterns like ",2-" / ",3-" at item boundaries
+        parts = re.split(r"\s*,\s*(?=\d+-)", raw.strip())
+        for part in parts:
+            m = re.match(r"^\d+-?\s*(.+?)(?:\s*\(\s*RELATION|\s*$)", part, re.I)
+            if m:
+                n = norm_name(m.group(1))
+            else:
+                n = norm_name(part.split("(")[0])
+            if n:
+                names.append(n)
+        return names
+    for row in _iter_dicts(raw):
+        n = _name_from_party_row(row)
+        if n:
+            names.append(n)
+    return names
+
+
 def api_party_names(deed: dict, side: str) -> list[str]:
     aliases = PARTY_API_KEYS[side]
-    found = []
-    # direct keys on the deed
     for alias in aliases:
         raw = _pick(deed, alias)
         if raw is None:
             continue
-        for row in _iter_dicts(raw):
-            n = _name_from_party_row(row)
-            if n:
-                found.append(n)
+        found = _names_from_party_blob(raw)
         if found:
             return found
     # nested under common parents
+    found = []
     for parent in ("parties", "partyDetails", "PartyDetails", "deedParties"):
         block = _pick(deed, parent)
         if not block:
@@ -606,7 +629,105 @@ def parse_args(argv=None):
                    help="Fetch + print one registration's API payload and exit")
     p.add_argument("--dry-run", action="store_true",
                    help="Resolve the reg list and exit without calling deed API")
+    p.add_argument("--audit-coverage", action="store_true",
+                   help="For Book 1/3/4 samples in GCS/local, count how many "
+                        "GetDeedInfoByRegNo / GetDeedScanCopy return empty/fail "
+                        "(the incomplete/removed class)")
     return p.parse_args(argv)
+
+
+def run_audit_coverage(client: SarvamClient, grounding_index: dict, books: list[int],
+                       limit: int, sleep: float, out_path: Path) -> int:
+    """Count GCS/local samples whose official API metadata/scan is missing."""
+    targets = []
+    for b in books:
+        regs = filter_regs_for_book(grounding_index, b)
+        print(f"[audit] book {b}: {len(regs)} GCS/local candidates", flush=True)
+        targets.extend((b, r) for r in regs)
+    # de-dupe by reg
+    seen = set()
+    uniq = []
+    for b, r in targets:
+        if r in seen:
+            continue
+        seen.add(r)
+        uniq.append((b, r))
+    if limit:
+        uniq = uniq[:limit]
+    print(f"[audit] probing {len(uniq)} registration numbers…", flush=True)
+
+    rows = []
+    for i, (book, reg) in enumerate(uniq, 1):
+        info = client.get_deed_info(reg)
+        info_ok = not is_empty_deed_payload(info)
+        scan_ok = False
+        scan_code = None
+        scan_msg = None
+        try:
+            scan = client.get_deed_scan_copy(reg)
+            if isinstance(scan, dict):
+                scan_code = scan.get("code")
+                scan_msg = scan.get("message")
+                scan_ok = scan_code == 0 or (
+                    scan.get("data") not in (None, {}, []) and scan_code != 2)
+            elif scan:
+                scan_ok = True
+        except Exception as e:
+            scan_msg = str(e)
+        rows.append({
+            "book_no": book,
+            "registration_no": reg,
+            "info_ok": info_ok,
+            "scan_ok": scan_ok,
+            "scan_code": scan_code,
+            "scan_message": scan_msg,
+            "gcs_book_label": (grounding_index.get(reg) or {}).get("book_label"),
+            "gcs_deed_type": (grounding_index.get(reg) or {}).get("deed_type"),
+        })
+        flag = []
+        if not info_ok:
+            flag.append("NO_INFO")
+        if not scan_ok:
+            flag.append("NO_SCAN")
+        print(f"  [{i}/{len(uniq)}] {reg} book={book} "
+              f"{'OK' if not flag else '+'.join(flag)}", flush=True)
+        if sleep:
+            time.sleep(sleep)
+
+    by_book = {}
+    for b in books:
+        subset = [r for r in rows if r["book_no"] == b]
+        n = len(subset)
+        no_info = sum(1 for r in subset if not r["info_ok"])
+        no_scan = sum(1 for r in subset if not r["scan_ok"])
+        either = sum(1 for r in subset if not r["info_ok"] or not r["scan_ok"])
+        by_book[str(b)] = {
+            "total": n,
+            "missing_info": no_info,
+            "missing_scan": no_scan,
+            "missing_info_or_scan": either,
+            "missing_info_pct": round(100 * no_info / n, 1) if n else 0,
+            "missing_scan_pct": round(100 * no_scan / n, 1) if n else 0,
+        }
+    missing_rows = [r for r in rows if not r["info_ok"] or not r["scan_ok"]]
+    report = {
+        "books": books,
+        "probed": len(rows),
+        "by_book": by_book,
+        "missing_samples": missing_rows,
+        "missing_info_regs": [r["registration_no"] for r in rows if not r["info_ok"]],
+        "missing_scan_regs": [r["registration_no"] for r in rows if not r["scan_ok"]],
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    print("\n===== AUDIT SUMMARY (GCS/local samples vs IGR API) =====", flush=True)
+    for b, s in by_book.items():
+        print(f"Book {b}: {s['total']} probed — "
+              f"missing info {s['missing_info']} ({s['missing_info_pct']}%), "
+              f"missing scan {s['missing_scan']} ({s['missing_scan_pct']}%), "
+              f"either {s['missing_info_or_scan']}", flush=True)
+    print(f"wrote {out_path}", flush=True)
+    return 0
 
 
 def main(argv=None):
@@ -665,6 +786,16 @@ def main(argv=None):
         print("[gcs] NOTE: only the local sample deed is loaded. To compare the "
               "real Book 1 corpus, set GCS_BUCKET (+ GCS_CREDENTIALS_JSON) and "
               "GCS_PREFIX / GCS_RAW_PREFIX like the deployed app.", flush=True)
+
+    if args.audit_coverage:
+        if not client:
+            print("ERROR: --audit-coverage needs SARVAM_BASE_URL", file=sys.stderr)
+            return 2
+        out = Path(args.out)
+        if args.out == "data/mismatches/book_mismatches.json":
+            out = Path("data/mismatches/api_coverage_audit.json")
+        return run_audit_coverage(
+            client, grounding_index, books, args.limit, args.sleep, out)
 
     api_book_map: dict[str, int] = {}
     if args.from_date and args.to_date and client:

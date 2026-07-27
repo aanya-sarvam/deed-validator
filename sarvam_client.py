@@ -37,12 +37,25 @@ _ENVELOPE_KEYS = {
 
 
 def is_empty_deed_payload(deed: Any) -> bool:
-    """True when GetDeedInfoByRegNo returned the empty IGR envelope
-    ({data:null, code:0, information:null}) or otherwise has no usable fields."""
+    """True when GetDeedInfoByRegNo has no usable deed fields.
+
+    Live IGR shape:
+      {"data": {serial, district, office, ...}, "code": 0, "information": null}
+    Empty / removed deeds:
+      {"data": null, "code": 0, "information": null}
+    """
     if not isinstance(deed, dict) or not deed:
         return True
     if deed.get("_empty"):
         return True
+    # Prefer nested data/information when present (full HTTP envelope).
+    for key in ("data", "Data", "information", "Information", "result", "Result"):
+        val = deed.get(key)
+        if isinstance(val, dict) and val:
+            deed = val
+            break
+        if isinstance(val, list) and val:
+            return False
     usable = 0
     for k, v in deed.items():
         if str(k).lower() in _ENVELOPE_KEYS:
@@ -201,16 +214,13 @@ class SarvamClient:
     def get_deed_info(self, registration_no: str) -> dict:
         """POST GetDeedInfoByRegNo — official metadata for one registration.
 
-        Tries a few request-body shapes the ERP has used across builds.
-        Returns a dict; if the API answered with an empty envelope, the
-        result is marked `_empty=True` so callers don't treat it as a match.
+        Live IGR envelope puts the deed object in `data` (dict), with
+        `information` usually null. Empty/removed deeds return data=null.
         """
         reg = str(registration_no).strip()
         bodies = [
             {"registrationNo": reg},
             {"RegistrationNo": reg},
-            {"regNo": reg},
-            {"registration_no": reg},
         ]
         last_raw = None
         for body in bodies:
@@ -221,27 +231,33 @@ class SarvamClient:
                 timeout=self.timeout,
                 verify=self.verify_ssl,
             )
-            r.raise_for_status()
+            if r.status_code >= 400:
+                # alternate body shapes can 400 — try the next
+                continue
             raw = r.json()
             last_raw = raw
             self.last_raw = raw
-            # Prefer a non-empty information/data payload when present.
-            candidate = raw
+            candidate = None
             if isinstance(raw, dict):
-                for key in ("information", "Information", "data", "Data",
+                # Prefer `data` first — that's where IGR puts the deed object.
+                for key in ("data", "Data", "information", "Information",
                             "result", "Result"):
                     val = raw.get(key)
-                    if val not in (None, "", [], {}):
+                    if isinstance(val, dict) and val:
                         candidate = val
                         break
-            if isinstance(candidate, list):
-                candidate = candidate[0] if candidate else {}
+                    if isinstance(val, list) and val:
+                        candidate = val[0] if isinstance(val[0], dict) else None
+                        if candidate:
+                            break
             if isinstance(candidate, dict) and not is_empty_deed_payload(candidate):
                 out = dict(candidate)
                 out.setdefault("registration_no", reg)
+                out.setdefault(
+                    "registrationNo",
+                    out.get("registrationNo") or reg)
                 out["_empty"] = False
                 return out
-        # Nothing usable across body variants.
         if isinstance(last_raw, dict):
             out = dict(last_raw)
         else:
@@ -281,5 +297,5 @@ def _as_book_int(value) -> int | None:
 
 def book_no_from_api_deed(deed: dict) -> int | None:
     return _as_book_int(_pick(
-        deed, "bookNo", "book_no", "book", "BookNo", "bookNumber",
+        deed, "deedBookNo", "bookNo", "book_no", "book", "BookNo", "bookNumber",
         "bookType", "book_type", "Book"))
