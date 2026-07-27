@@ -175,6 +175,16 @@
     border-color: var(--edited-border); box-shadow: 0 0 0 1px var(--edited-border); }
   .ocr-orig { font-size: 0.7667rem; color: var(--warn); margin-top: 2px; display: none; }
   .ocr-orig.show { display: block; }
+  .api-mismatch { font-size: 0.7667rem; color: #9a3412; background: #fff7ed;
+    border: 1px solid #fed7aa; border-radius: 6px; padding: 6px 8px; margin-top: 4px; }
+  .api-mismatch strong { font-weight: 600; }
+  .frow.has-mismatch input, .frow.has-mismatch textarea {
+    border-color: #fb923c; box-shadow: 0 0 0 1px #fed7aa; }
+  .mismatch-banner { background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;
+    border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 0.85rem; }
+  .mismatch-banner ul { margin: 6px 0 0; padding-left: 18px; }
+  .chip.mismatch { background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; }
+  .ocr-orig.show { display: block; }
   .lblrow { display: flex; align-items: center; gap: 6px; }
   .eye-btn { border: none; background: none; cursor: pointer; padding: 0 2px;
     font-size: 0.85rem; opacity: 0.35; line-height: 1; }
@@ -353,6 +363,21 @@
           <option value="in_monitor_review" class="mon-only">In monitor review</option>
           <option value="reviewed" class="mon-only">Monitored</option>
           <option value="flagged">Flagged</option>
+        </select>
+      </div>
+      <div class="grp">Book
+        <select id="f_book" onchange="runSearch(1)">
+          <option value="">Any</option>
+          <option value="1">Book 1</option>
+          <option value="3">Book 3</option>
+          <option value="4">Book 4</option>
+        </select>
+      </div>
+      <div class="grp">Metadata
+        <select id="f_mismatch" onchange="runSearch(1)">
+          <option value="">All</option>
+          <option value="1">API mismatches only</option>
+          <option value="0">No API mismatch</option>
         </select>
       </div>
       <div class="grp">Per page
@@ -664,7 +689,10 @@ async function runSearch(page) {
   const p = new URLSearchParams({
     q: ($('f_q') ? $('f_q').value : ''),
     assigned: ($('f_assigned') ? $('f_assigned').value : ''),
-    status: $('f_status').value, page: PAGE, per_page: $('per_page').value });
+    status: $('f_status').value,
+    book: ($('f_book') ? $('f_book').value : ''),
+    mismatches: ($('f_mismatch') ? $('f_mismatch').value : ''),
+    page: PAGE, per_page: $('per_page').value });
   const d = await api('/search?' + p);
 
   const cols = ROLE === 'admin' ? REC_COLS_ADMIN : REC_COLS_EXPERT;
@@ -685,6 +713,8 @@ async function runSearch(page) {
     tr.title = 'Click to open for validation';
     tr.onclick = () => openDoc(r.id);   // #5: row click → validate mode
     const statusCell = `<span class="chip ${r.status}"><span class="dot"></span>${STATUS_LABEL[r.status] || r.status || 'Pending'}</span>`
+      + (r.has_api_mismatch
+         ? `<div class="flagnote" title="${(r.mismatch_count || 0)} field(s) differ from official API">⚠ API mismatch${r.mismatch_count ? ' ('+r.mismatch_count+')' : ''}</div>` : '')
       + (r.status === 'flagged' && r.flag_reason
          ? `<div class="flagnote" title="${r.flag_reason.replace(/"/g,'&quot;')}">⚑ ${r.flag_reason}</div>` : '');
     const editedBy = r.last_edited_name || '—';
@@ -935,6 +965,15 @@ function renderDoc(d) {
   const pill = $('statuspill');
   pill.className = 'chip ' + doc.status;
   pill.innerHTML = `<span class="dot"></span>${STATUS_LABEL[doc.status] || doc.status || 'Pending'}`;
+  // clear any previous API-mismatch chip from a prior renderDoc call
+  let sib = pill.nextElementSibling;
+  while (sib && sib.classList && sib.classList.contains('mismatch')) {
+    const gone = sib; sib = sib.nextElementSibling; gone.remove();
+  }
+  if (doc.has_api_mismatch) {
+    pill.insertAdjacentHTML('afterend',
+      ' <span class="chip mismatch"><span class="dot"></span>API mismatch</span>');
+  }
   $('queuemeta').textContent = QUEUE_MODE ? `${d.remaining} in queue` : '';
   $('vfoot').style.display = editable ? 'flex' : 'none';
   // Footer differs by state:
@@ -968,6 +1007,16 @@ function renderDoc(d) {
     const fb = document.createElement('div'); fb.className = 'robanner flagbanner';
     fb.textContent = `⚑ Flagged: ${doc.flag_reason || 'no reason given'} — correct and Approve, or Unflag to return it to review.`;
     pane.appendChild(fb);
+  }
+  const mismatchMap = buildMismatchMap(doc);
+  if (doc.has_api_mismatch && (doc.api_mismatch_detail || {}).mismatches) {
+    const mb = document.createElement('div'); mb.className = 'mismatch-banner';
+    const ms = doc.api_mismatch_detail.mismatches || [];
+    mb.innerHTML = `<strong>Official API metadata differs from GCS grounding</strong>
+      (${ms.length} field${ms.length === 1 ? '' : 's'}). Correct the OCR values against the scan / API source.`
+      + `<ul>${ms.map(m => `<li><code>${escHtml(m.field)}</code>: API <em>${escHtml(fmtMismatchVal(m.api_value))}</em>
+         vs GCS <em>${escHtml(fmtMismatchVal(m.gcs_value))}</em></li>`).join('')}</ul>`;
+    pane.appendChild(mb);
   }
   if (!editable) {
     const b = document.createElement('div'); b.className = 'robanner';
@@ -1030,6 +1079,8 @@ function renderDoc(d) {
     fi++;
     const row = document.createElement('div'); row.className = 'frow';
     const blockLabel = f.label;
+    const mm = mismatchForField(f, mismatchMap);
+    if (mm) row.classList.add('has-mismatch');
     const tag = f.multiline ? 'textarea' : 'input';
     const otag = (f.multiline || (f.odia_value || '').length > 60) ? 'textarea' : 'input';
     row.innerHTML = `<div class="lblrow"><label for="f${f.id}_odia">${blockLabel} (Odia)</label>
@@ -1042,6 +1093,12 @@ function renderDoc(d) {
       <div class="ocr-orig" id="o${f.id}"></div>
       <div class="edited-by" id="eb${f.id}"></div>`;
     secEl.appendChild(row);
+    if (mm) {
+      const tip = document.createElement('div'); tip.className = 'api-mismatch';
+      tip.innerHTML = `<strong>API:</strong> ${escHtml(fmtMismatchVal(mm.api_value))}
+        &nbsp;·&nbsp; <strong>GCS:</strong> ${escHtml(fmtMismatchVal(mm.gcs_value))}`;
+      row.appendChild(tip);
+    }
     const el = row.querySelector('[data-fid]');
     el.value = f.current_value;
     markChanged(el, f);
@@ -1076,6 +1133,57 @@ function renderDoc(d) {
   }
   pane.scrollTop = 0;
   if (editable) { const first = pane.querySelector('[data-fid-odia]'); if (first) first.focus(); }
+}
+
+const MISMATCH_FIELD_TO_LABEL = {
+  deed_type: ['deed type', 'deed_type'],
+  district: ['district'],
+  office: ['registration office', 'office', 'sr office'],
+  registration_date: ['registration date'],
+  presentation_date: ['presentation date'],
+  consideration_amount: ['consideration amount', 'consideration'],
+  old_reg_no: ['old registration no', 'old reg no'],
+  seller_names: ['name'],  // under Sellers section
+  buyer_names: ['name'],
+  property_plots: ['village', 'khata', 'plot'],
+  book_no: ['book'],
+};
+
+function buildMismatchMap(doc) {
+  const detail = doc.api_mismatch_detail || {};
+  const list = detail.mismatches || [];
+  const map = {};
+  for (const m of list) map[m.field] = m;
+  return map;
+}
+
+function mismatchForField(f, mismatchMap) {
+  if (!mismatchMap || !Object.keys(mismatchMap).length) return null;
+  const label = (f.label || '').toLowerCase();
+  const layout = (f.layout_tag || (f.src_block && f.src_block.id) || '').toLowerCase();
+  const section = (f.section || '').toLowerCase();
+  for (const [field, m] of Object.entries(mismatchMap)) {
+    const aliases = MISMATCH_FIELD_TO_LABEL[field] || [field];
+    const labelHit = aliases.some(a => label.includes(a) || layout.includes(a.replace(/ /g, '_')));
+    if (!labelHit) continue;
+    if (field === 'seller_names' && !(section.includes('seller'))) continue;
+    if (field === 'buyer_names' && !(section.includes('buyer'))) continue;
+    if (field === 'property_plots' && !(section.includes('propert'))) continue;
+    return m;
+  }
+  return null;
+}
+
+function fmtMismatchVal(v) {
+  if (v == null || v === '') return '(empty)';
+  if (Array.isArray(v)) return v.length ? v.join(', ') : '(empty)';
+  return String(v);
+}
+
+function escHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function prettyTag(t) {

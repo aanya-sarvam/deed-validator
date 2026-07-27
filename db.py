@@ -118,6 +118,12 @@ ALTER TABLE fields ADD COLUMN IF NOT EXISTS page_num INT;
 -- Original grounding.json header (reg_no, book_label, deed_type, chunks...)
 -- so corrected output can be exported in exactly the input shape.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS src_meta JSONB;
+-- Official Sarvam/IGR API vs GCS grounding comparison (see compare_metadata.py)
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS has_api_mismatch BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS api_mismatch_detail JSONB;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS api_book_no INT;
+CREATE INDEX IF NOT EXISTS idx_docs_api_mismatch ON documents(has_api_mismatch)
+    WHERE has_api_mismatch = TRUE;
 """
 
 SEED_USERS = [

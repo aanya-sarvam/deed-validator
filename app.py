@@ -718,6 +718,7 @@ PARTY_NAME_SQL = ("(SELECT string_agg(current_value, E'\\n' ORDER BY position) F
 @app.get("/api/search")
 def search(q: str = "", field: str = "deed_number", status: str = "",
            assigned: str = "", sort_by: str = "", sort_order: str = "asc",
+           mismatches: str = "", book: str = "",
            page: int = 1, per_page: int = 10, user=Depends(current_user)):
     where, params = [], []
     q = q.strip()
@@ -734,6 +735,15 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
             where.append("d.book_no = %s"); params.append(int(q))
     if status:
         where.append("d.status = %s"); params.append(status)
+    # mismatches=1 → only deeds whose official API metadata disagrees with GCS
+    # grounding (populated by compare_metadata.py --update-db).
+    if mismatches in ("1", "true", "yes"):
+        where.append("d.has_api_mismatch = TRUE")
+    elif mismatches in ("0", "false", "no"):
+        where.append("d.has_api_mismatch = FALSE")
+    if book.isdigit():
+        where.append("(d.api_book_no = %s OR d.book_no = %s)"); params.extend(
+            [int(book), int(book)])
     # assigned-to filter (admin/monitor views): expert id, or 'none' = unassigned
     if assigned and user["role"] in ("admin", "monitor"):
         if assigned == "none":
@@ -775,6 +785,9 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
             f"d.status, d.flag_reason, (d.pdf_file IS NOT NULL) has_pdf, u.full_name locked_name, "
             f"a.full_name assigned_name, a.id assigned_id, "
             f"le.full_name last_edited_name, to_char(d.last_edited_at, 'DD Mon HH24:MI') last_edited_at, "
+            f"COALESCE(d.has_api_mismatch, FALSE) has_api_mismatch, "
+            f"d.api_book_no, "
+            f"COALESCE((d.api_mismatch_detail->>'mismatch_count')::int, 0) mismatch_count, "
             f"{PARTY_NAME_SQL} first_party, {PARTY_NAME_SQL} second_party "
             f"FROM documents d LEFT JOIN users u ON u.id = d.locked_by "
             f"LEFT JOIN users a ON a.id = d.assigned_to "
@@ -783,6 +796,50 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
             ["First party%", "Second party%"] + params + [per_page, offset]).fetchall()
     return {"total": total, "page": page, "per_page": per_page,
             "results": [dict(r) for r in rows]}
+
+
+@app.get("/api/mismatches/summary")
+def mismatches_summary(book: str = "", user=Depends(current_user)):
+    """Counts for the Records-tab mismatch filter badge."""
+    where, params = ["has_api_mismatch = TRUE"], []
+    if book.isdigit():
+        where.append("(api_book_no = %s OR book_no = %s)")
+        params.extend([int(book), int(book)])
+    wsql = " AND ".join(where)
+    with connect() as con:
+        total = con.execute(
+            f"SELECT COUNT(*) c FROM documents WHERE {wsql}", params).fetchone()["c"]
+        by_book = con.execute(
+            "SELECT COALESCE(api_book_no, book_no) AS book_no, COUNT(*) AS n "
+            "FROM documents WHERE has_api_mismatch = TRUE "
+            "GROUP BY 1 ORDER BY 1 NULLS LAST").fetchall()
+    return {"total": total, "by_book": [dict(r) for r in by_book]}
+
+
+@app.post("/api/admin/load-mismatches")
+def load_mismatches(path: str = "data/mismatches/book1_mismatches.json",
+                    user=Depends(require_admin)):
+    """Apply a compare_metadata.py JSON report onto documents rows so the
+    frontend filter can show mismatches without re-calling the external API."""
+    p = Path(path)
+    if not p.exists():
+        raise HTTPException(404, f"Report not found: {path}")
+    try:
+        report = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(400, f"Invalid JSON: {e}")
+    rows = report.get("mismatches") or report.get("all") or []
+    if not isinstance(rows, list):
+        raise HTTPException(400, "Report must contain a 'mismatches' (or 'all') list")
+    from compare_metadata import update_db
+    # Only stamp mismatch rows here; clear flags for books named in the report
+    books = report.get("books") or []
+    clear = books[0] if len(books) == 1 else None
+    # If the report is mismatches-only, also mark those as mismatched.
+    for row in rows:
+        row.setdefault("has_mismatch", True)
+    update_db(rows, clear_book=clear)
+    return {"ok": True, "applied": len(rows), "path": str(p)}
 
 
 # ---------- edits & lifecycle ----------
