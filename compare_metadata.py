@@ -45,6 +45,7 @@ from sarvam_client import (
     _as_book_int,
     _pick,
     book_no_from_api_deed,
+    is_empty_deed_payload,
 )
 
 # Book 1 = documents that transfer/create rights in immovable property
@@ -414,6 +415,21 @@ def flatten_api_for_display(deed: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def compare_one(reg_no: str, api_deed: dict, grounding: dict) -> dict:
+    if is_empty_deed_payload(api_deed):
+        return {
+            "registration_no": reg_no,
+            "book_no": grounding_book_no(grounding),
+            "has_mismatch": False,
+            "mismatch_count": 0,
+            "mismatches": [],
+            "api_empty": True,
+            "error": "GetDeedInfoByRegNo returned empty payload "
+                     "(data/information null) — not comparable",
+            "api": flatten_api_for_display(api_deed) if isinstance(api_deed, dict) else {},
+            "gcs_book_label": grounding.get("book_label"),
+            "gcs_deed_type": grounding.get("deed_type"),
+        }
+
     api_view = flatten_api_for_display(api_deed)
     g_scalars = grounding_scalars(grounding)
     mismatches = []
@@ -608,7 +624,8 @@ def main(argv=None):
         return 2
 
     client = None
-    if base_url:
+    need_api = not args.dry_run  # dry-run only needs local/GCS grounding
+    if base_url and need_api:
         client = SarvamClient(base_url=base_url)
         print(f"[auth] logging in at {base_url} …", flush=True)
         client.authenticate()
@@ -618,16 +635,36 @@ def main(argv=None):
         if not client:
             print("ERROR: --probe needs SARVAM_BASE_URL", file=sys.stderr)
             return 2
-        raw = client.get_deed_info(args.probe)
-        print(json.dumps(raw, indent=2, default=str))
+        parsed = client.get_deed_info(args.probe)
+        print("--- raw HTTP JSON ---")
+        print(json.dumps(client.last_raw, indent=2, default=str))
+        print("\n--- parsed ---")
+        print(json.dumps(parsed, indent=2, default=str))
+        if is_empty_deed_payload(parsed):
+            print("\nWARNING: API returned an empty envelope — no metadata fields "
+                  "to compare. Try the curl below and ask the IGR contact whether "
+                  "GetDeedInfoByRegNo is enabled for this login / reg no.",
+                  flush=True)
+            print(
+                "\ncurl -k -X POST "
+                f"'{base_url}/api/Deed/GetDeedInfoByRegNo' "
+                "-H 'Content-Type: application/json' "
+                "-H \"Authorization: Bearer $TOKEN\" "
+                f"-d '{{\"registrationNo\": \"{args.probe}\"}}'",
+                flush=True)
+            return 3
         print("\n--- mapped ---")
-        print(json.dumps(flatten_api_for_display(raw), indent=2, default=str))
+        print(json.dumps(flatten_api_for_display(parsed), indent=2, default=str))
         return 0
 
     print("[gcs] loading grounding index…", flush=True)
     grounding_index = load_grounding_index(args.local_dir or None)
     print(f"[gcs] {len(grounding_index)} deeds with grounding metadata",
           flush=True)
+    if len(grounding_index) <= 1:
+        print("[gcs] NOTE: only the local sample deed is loaded. To compare the "
+              "real Book 1 corpus, set GCS_BUCKET (+ GCS_CREDENTIALS_JSON) and "
+              "GCS_PREFIX / GCS_RAW_PREFIX like the deployed app.", flush=True)
 
     api_book_map: dict[str, int] = {}
     if args.from_date and args.to_date and client:
@@ -688,7 +725,17 @@ def main(argv=None):
             api_deed = client.get_deed_info(reg)
             if raw_dir:
                 (raw_dir / f"{reg}.json").write_text(
-                    json.dumps(api_deed, indent=2, default=str), encoding="utf-8")
+                    json.dumps(client.last_raw if client.last_raw is not None
+                               else api_deed, indent=2, default=str),
+                    encoding="utf-8")
+            if is_empty_deed_payload(api_deed):
+                errors.append({
+                    "registration_no": reg,
+                    "error": "GetDeedInfoByRegNo returned empty payload",
+                    "raw": client.last_raw,
+                })
+                print(f"  [{i}/{len(target_regs)}] EMPTY API {reg}", flush=True)
+                continue
             row = compare_one(reg, api_deed, g)
             results.append(row)
             if row["has_mismatch"]:
