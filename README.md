@@ -79,12 +79,31 @@ mismatches in the Records UI.
 export SARVAM_BASE_URL='https://erp.igrodisha.gov.in/igrone'
 # credentials default to the shared Postman values; override if needed:
 # export SARVAM_LOGIN_ID='...' SARVAM_PASSWORD='...' SARVAM_USER_TYPE='SU'
+# if curl needs -k, also set:
+export SARVAM_VERIFY_SSL=0
 # same GCS_* vars the app already uses, if reading from the bucket:
 #   GCS_BUCKET / GCS_CREDENTIALS_JSON / GCS_PREFIX / GCS_RAW_PREFIX
 
 # 1) Verify auth + one deed's metadata shape
 python compare_metadata.py --probe 910010201217
+```
 
+If `--probe` prints `WARNING: API returned an empty envelope`, auth is fine
+but `GetDeedInfoByRegNo` is not returning fields for that login/reg. Confirm
+with curl (token from step 1 of the shared two-step flow):
+
+```bash
+curl -k -X POST 'https://erp.igrodisha.gov.in/igrone/api/Deed/GetDeedInfoByRegNo' \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"registrationNo": "910010201217"}'
+```
+
+A usable response has deed fields under `information` (or `data`) — not
+`null`. Until that works, comparison cannot find mismatches (empty API
+payloads are recorded as errors, not matches).
+
+```bash
 # Book 1 only (sale / immovable) — writes mismatches JSON + stamps the DB
 python compare_metadata.py --book 1 --update-db
 
@@ -92,12 +111,12 @@ python compare_metadata.py --book 1 --update-db
 python compare_metadata.py --books 1,3,4 --update-db \
   --out data/mismatches/books_1_3_4_mismatches.json
 
-# Probe one registration to see the raw API shape (tune field aliases if needed)
-python compare_metadata.py --probe 910010000401
-
 # Dry-run: list which GCS reg nos would be checked for Book 1
 python compare_metadata.py --book 1 --dry-run
 ```
+
+Without `GCS_*` set, the script only sees the local `data/` sample (one
+deed). Point it at the same bucket the app uses before a full Book 1 run.
 
 Then in the frontend Records tab: set **Metadata → API mismatches only**
 (and optionally **Book → Book 1**). Opening a mismatched deed shows the

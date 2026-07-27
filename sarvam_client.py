@@ -19,13 +19,38 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 from typing import Any
 
 import requests
+from urllib3.exceptions import InsecureRequestWarning
 
 DEFAULT_LOGIN_ID = "$@rv@m@2026"
 DEFAULT_PASSWORD = "Sarvam@2026"
 DEFAULT_USER_TYPE = "SU"
+
+# Envelope keys that are transport metadata, not deed fields.
+_ENVELOPE_KEYS = {
+    "data", "code", "message", "information", "status", "success",
+    "error", "errors", "registration_no", "_raw", "_empty", "_http_status",
+}
+
+
+def is_empty_deed_payload(deed: Any) -> bool:
+    """True when GetDeedInfoByRegNo returned the empty IGR envelope
+    ({data:null, code:0, information:null}) or otherwise has no usable fields."""
+    if not isinstance(deed, dict) or not deed:
+        return True
+    if deed.get("_empty"):
+        return True
+    usable = 0
+    for k, v in deed.items():
+        if str(k).lower() in _ENVELOPE_KEYS:
+            continue
+        if v in (None, "", [], {}):
+            continue
+        usable += 1
+    return usable == 0
 
 
 def _unwrap(payload: Any) -> Any:
@@ -81,9 +106,13 @@ class SarvamClient:
         self.token: str | None = None
         self.verify_ssl = os.environ.get("SARVAM_VERIFY_SSL", "1").lower() not in (
             "0", "false", "no")
+        if not self.verify_ssl:
+            warnings.filterwarnings("ignore", category=InsecureRequestWarning)
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json",
                                      "Accept": "application/json"})
+        # Keep last raw JSON for --probe / debugging.
+        self.last_raw: Any = None
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path if path.startswith('/') else '/' + path}"
@@ -170,23 +199,56 @@ class SarvamClient:
         return out
 
     def get_deed_info(self, registration_no: str) -> dict:
-        """POST GetDeedInfoByRegNo — official metadata for one registration."""
-        r = self.session.post(
-            self._url("/api/Deed/GetDeedInfoByRegNo"),
-            headers=self._auth_headers(),
-            json={"registrationNo": str(registration_no).strip()},
-            timeout=self.timeout,
-            verify=self.verify_ssl,
-        )
-        r.raise_for_status()
-        data = _unwrap(r.json())
-        if isinstance(data, list):
-            data = data[0] if data else {}
-        if not isinstance(data, dict):
-            return {"_raw": data, "registration_no": str(registration_no)}
-        data = dict(data)
-        data.setdefault("registration_no", str(registration_no).strip())
-        return data
+        """POST GetDeedInfoByRegNo — official metadata for one registration.
+
+        Tries a few request-body shapes the ERP has used across builds.
+        Returns a dict; if the API answered with an empty envelope, the
+        result is marked `_empty=True` so callers don't treat it as a match.
+        """
+        reg = str(registration_no).strip()
+        bodies = [
+            {"registrationNo": reg},
+            {"RegistrationNo": reg},
+            {"regNo": reg},
+            {"registration_no": reg},
+        ]
+        last_raw = None
+        for body in bodies:
+            r = self.session.post(
+                self._url("/api/Deed/GetDeedInfoByRegNo"),
+                headers=self._auth_headers(),
+                json=body,
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+            )
+            r.raise_for_status()
+            raw = r.json()
+            last_raw = raw
+            self.last_raw = raw
+            # Prefer a non-empty information/data payload when present.
+            candidate = raw
+            if isinstance(raw, dict):
+                for key in ("information", "Information", "data", "Data",
+                            "result", "Result"):
+                    val = raw.get(key)
+                    if val not in (None, "", [], {}):
+                        candidate = val
+                        break
+            if isinstance(candidate, list):
+                candidate = candidate[0] if candidate else {}
+            if isinstance(candidate, dict) and not is_empty_deed_payload(candidate):
+                out = dict(candidate)
+                out.setdefault("registration_no", reg)
+                out["_empty"] = False
+                return out
+        # Nothing usable across body variants.
+        if isinstance(last_raw, dict):
+            out = dict(last_raw)
+        else:
+            out = {"_raw": last_raw}
+        out["registration_no"] = reg
+        out["_empty"] = True
+        return out
 
     def get_deed_scan_copy(self, registration_no: str) -> Any:
         """POST GetDeedScanCopy — scanned deed payload (often base64 / URL)."""
@@ -195,9 +257,11 @@ class SarvamClient:
             headers=self._auth_headers(),
             json={"registrationNo": str(registration_no).strip()},
             timeout=self.timeout,
+            verify=self.verify_ssl,
         )
         r.raise_for_status()
-        return r.json()
+        self.last_raw = r.json()
+        return self.last_raw
 
 
 def _as_book_int(value) -> int | None:
