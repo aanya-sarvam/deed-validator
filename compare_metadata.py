@@ -46,6 +46,7 @@ from sarvam_client import (
     _pick,
     book_no_from_api_deed,
     is_empty_deed_payload,
+    normalize_reg_no,
 )
 
 # Book 1 = documents that transfer/create rights in immovable property
@@ -201,7 +202,7 @@ def load_grounding_index(local_dir: str | None = None) -> dict[str, dict]:
                 g = json.loads(gpath.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            reg = str(g.get("reg_no") or gpath.parent.name).strip()
+            reg = normalize_reg_no(g.get("reg_no") or gpath.parent.name)
             if reg:
                 out[reg] = g
 
@@ -210,7 +211,8 @@ def load_grounding_index(local_dir: str | None = None) -> dict[str, dict]:
         import gcs_store
         if gcs_store.enabled():
             for reg in gcs_store.list_deed_ids():
-                if reg in out:
+                reg = normalize_reg_no(reg)
+                if not reg or reg in out:
                     continue
                 raw = gcs_store.read_text(f"{reg}/grounding.json")
                 if not raw:
@@ -236,8 +238,9 @@ def load_grounding_index(local_dir: str | None = None) -> dict[str, dict]:
                         g = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    reg = str(g.get("reg_no") or "").strip()
+                    reg = normalize_reg_no(g.get("reg_no") or g.get("key") or "")
                     if reg and reg not in out:
+                        g.setdefault("reg_no", reg)
                         out[reg] = g
     except Exception as e:
         print(f"[compare] GCS load skipped/partial: {e}", flush=True)
