@@ -68,7 +68,42 @@ reshapes them into per-deed folders (`grounding.json` + `ocr.jsonl` +
 `<reg_no>.pdf`, PDFs built up front instead of on first view) that
 `ingest_json.py data/batch_2` or `ingest_dir()` can load the normal way.
 
-## Extracting corrected data
+## Matching Book 1 / 3 / 4 metadata against the official API
+
+The shared Sarvam Postman collection exposes four endpoints (auth, reg-nos
+by date, deed details by reg no, scan copy). Use them to compare official
+metadata with the OCR grounding we hold in GCS, then show only the
+mismatches in the Records UI.
+
+```bash
+export SARVAM_BASE_URL='https://<BaseURL-from-Postman>'
+# same GCS_* vars the app already uses, if reading from the bucket:
+#   GCS_BUCKET / GCS_CREDENTIALS_JSON / GCS_PREFIX / GCS_RAW_PREFIX
+
+# Book 1 only (sale / immovable) — writes mismatches JSON + stamps the DB
+python compare_metadata.py --book 1 --update-db
+
+# Or books 1, 3 and 4 together
+python compare_metadata.py --books 1,3,4 --update-db \
+  --out data/mismatches/books_1_3_4_mismatches.json
+
+# Probe one registration to see the raw API shape (tune field aliases if needed)
+python compare_metadata.py --probe 910010000401
+
+# Dry-run: list which GCS reg nos would be checked for Book 1
+python compare_metadata.py --book 1 --dry-run
+```
+
+Then in the frontend Records tab: set **Metadata → API mismatches only**
+(and optionally **Book → Book 1**). Opening a mismatched deed shows the
+official API value next to the GCS/OCR value for each differing field.
+
+If you ran the script offline (no DB), copy the JSON onto the server and:
+
+```bash
+curl -X POST "https://<host>/api/admin/load-mismatches?token=<admin-token>&path=data/mismatches/book1_mismatches.json"
+```
+
 
 Admin -> Progress -> "Download corrected dataset", or:
 ```bash

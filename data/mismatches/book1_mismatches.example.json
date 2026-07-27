@@ -1,0 +1,69 @@
+{
+  "books": [
+    1
+  ],
+  "compared": 1,
+  "mismatch_count": 1,
+  "error_count": 0,
+  "mismatches": [
+    {
+      "registration_no": "910010000401",
+      "book_no": 1,
+      "has_mismatch": true,
+      "mismatch_count": 3,
+      "mismatches": [
+        {
+          "field": "district",
+          "api_value": "CUTTACK",
+          "gcs_value": "ANGUL"
+        },
+        {
+          "field": "consideration_amount",
+          "api_value": "9999",
+          "gcs_value": "6600"
+        },
+        {
+          "field": "buyer_names",
+          "api_value": [
+            "wrong buyer"
+          ],
+          "gcs_value": [
+            "dibakara sahoo",
+            "sanatana sahoo",
+            "trailokya sahoo",
+            "rabi sahoo",
+            "suresh sahoo"
+          ]
+        }
+      ],
+      "api": {
+        "registration_no": "910010000401",
+        "book_no": 1,
+        "scalars": {
+          "deed_type": "SALE IMMOVABLE",
+          "district": "CUTTACK",
+          "office": "ANGUL",
+          "registration_date": "22-May-2000",
+          "presentation_date": "11-Feb-2000",
+          "consideration_amount": "9999",
+          "old_reg_no": ""
+        },
+        "seller_names": [
+          "nidra pradhan",
+          "pandaba pradhan",
+          "susribara pradhan"
+        ],
+        "buyer_names": [
+          "wrong buyer"
+        ],
+        "property_plots": [
+          "kanhei nagar-32|38|73"
+        ]
+      },
+      "gcs_book_label": "SALE",
+      "gcs_deed_type": "SALE IMMOVABLE"
+    }
+  ],
+  "errors": [],
+  "_note": "Example report produced by compare_metadata.py. Replace by running against the live Sarvam API."
+}
