@@ -76,9 +76,14 @@ metadata with the OCR grounding we hold in GCS, then show only the
 mismatches in the Records UI.
 
 ```bash
-export SARVAM_BASE_URL='https://<BaseURL-from-Postman>'
+export SARVAM_BASE_URL='https://erp.igrodisha.gov.in/igrone'
+# credentials default to the shared Postman values; override if needed:
+# export SARVAM_LOGIN_ID='...' SARVAM_PASSWORD='...' SARVAM_USER_TYPE='SU'
 # same GCS_* vars the app already uses, if reading from the bucket:
 #   GCS_BUCKET / GCS_CREDENTIALS_JSON / GCS_PREFIX / GCS_RAW_PREFIX
+
+# 1) Verify auth + one deed's metadata shape
+python compare_metadata.py --probe 910010201217
 
 # Book 1 only (sale / immovable) — writes mismatches JSON + stamps the DB
 python compare_metadata.py --book 1 --update-db

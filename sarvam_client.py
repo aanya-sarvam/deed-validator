@@ -79,6 +79,8 @@ class SarvamClient:
         self.user_type = user_type or os.environ.get("SARVAM_USER_TYPE", DEFAULT_USER_TYPE)
         self.timeout = timeout
         self.token: str | None = None
+        self.verify_ssl = os.environ.get("SARVAM_VERIFY_SSL", "1").lower() not in (
+            "0", "false", "no")
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json",
                                      "Accept": "application/json"})
@@ -100,11 +102,17 @@ class SarvamClient:
                 "useR_TYPE": self.user_type,
             },
             timeout=self.timeout,
+            verify=self.verify_ssl,
         )
         r.raise_for_status()
         payload = r.json()
         token = _pick(payload, "token", "Token", "accessToken", "access_token",
                       "jwt", "jwtToken", "authToken")
+        if not token and isinstance(payload, dict):
+            # IGR Odisha ERP: { "information": { "token": "..." }, ... }
+            info = payload.get("information") or payload.get("Information")
+            if isinstance(info, dict):
+                token = _pick(info, "token", "Token", "accessToken", "access_token")
         if not token and isinstance(payload, str):
             token = payload
         if not token and isinstance(payload, dict):
@@ -114,6 +122,10 @@ class SarvamClient:
                           "jwt", "jwtToken", "authToken")
             if not token and isinstance(inner, str):
                 token = inner
+            if not token and isinstance(inner, dict):
+                info = inner.get("information") or inner.get("Information")
+                if isinstance(info, dict):
+                    token = _pick(info, "token", "Token")
         if not token:
             raise RuntimeError(
                 f"Authenticate succeeded but no token found in response: {payload!r}")
@@ -127,6 +139,7 @@ class SarvamClient:
             headers=self._auth_headers(),
             json={"fromDate": from_date, "toDate": to_date},
             timeout=self.timeout,
+            verify=self.verify_ssl,
         )
         r.raise_for_status()
         data = _unwrap(r.json())
@@ -163,6 +176,7 @@ class SarvamClient:
             headers=self._auth_headers(),
             json={"registrationNo": str(registration_no).strip()},
             timeout=self.timeout,
+            verify=self.verify_ssl,
         )
         r.raise_for_status()
         data = _unwrap(r.json())
