@@ -245,7 +245,9 @@ class SarvamClient:
         Live IGR envelope puts the deed object in `data` (dict), with
         `information` usually null. Empty/removed deeds return data=null.
         """
-        reg = str(registration_no).strip()
+        reg = normalize_reg_no(registration_no)
+        if not reg:
+            return {"registration_no": "", "_empty": True}
         bodies = [
             {"registrationNo": reg},
             {"RegistrationNo": reg},
@@ -299,7 +301,7 @@ class SarvamClient:
         r = self.session.post(
             self._url("/api/Deed/GetDeedScanCopy"),
             headers=self._auth_headers(),
-            json={"registrationNo": str(registration_no).strip()},
+            json={"registrationNo": normalize_reg_no(registration_no)},
             timeout=self.timeout,
             verify=self.verify_ssl,
         )
