@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 import warnings
 from typing import Any
 
@@ -163,63 +164,105 @@ class SarvamClient:
             raise RuntimeError("Not authenticated — call authenticate() first")
         return {"Authorization": f"Bearer {self.token}"}
 
-    def authenticate(self) -> str:
-        r = self.session.post(
-            self._url("/api/User/GetUserAuthencate"),
-            json={
-                "useR_LOGIN_ID": self.login_id,
-                "useR_PWD": self.password,
-                "useR_TYPE": self.user_type,
-            },
-            timeout=self.timeout,
-            verify=self.verify_ssl,
-        )
-        r.raise_for_status()
-        payload = r.json()
-        token = _pick(payload, "token", "Token", "accessToken", "access_token",
-                      "jwt", "jwtToken", "authToken")
-        if not token and isinstance(payload, dict):
-            # IGR Odisha ERP: { "information": { "token": "..." }, ... }
-            info = payload.get("information") or payload.get("Information")
-            if isinstance(info, dict):
-                token = _pick(info, "token", "Token", "accessToken", "access_token")
-        if not token and isinstance(payload, str):
-            token = payload
-        if not token and isinstance(payload, dict):
-            # some APIs nest the token one level deeper after unwrap
-            inner = _unwrap(payload)
-            token = _pick(inner, "token", "Token", "accessToken", "access_token",
-                          "jwt", "jwtToken", "authToken")
-            if not token and isinstance(inner, str):
-                token = inner
-            if not token and isinstance(inner, dict):
-                info = inner.get("information") or inner.get("Information")
-                if isinstance(info, dict):
-                    token = _pick(info, "token", "Token")
-        if not token:
-            raise RuntimeError(
-                f"Authenticate succeeded but no token found in response: {payload!r}")
-        self.token = str(token).strip()
-        return self.token
+    def _post_json(self, path: str, body: dict, *, auth: bool = True,
+                   retries: int = 3) -> Any:
+        """POST JSON; retry on empty body / transient failures."""
+        last_err: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                headers = self._auth_headers() if auth else {}
+                r = self.session.post(
+                    self._url(path),
+                    headers=headers,
+                    json=body,
+                    timeout=self.timeout,
+                    verify=self.verify_ssl,
+                )
+                if r.status_code >= 500:
+                    raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+                r.raise_for_status()
+                if not (r.text or "").strip():
+                    raise RuntimeError("empty response body")
+                raw = r.json()
+                self.last_raw = raw
+                return raw
+            except Exception as e:
+                last_err = e
+                if attempt >= retries:
+                    break
+                time.sleep(min(2 ** attempt, 8))
+        raise RuntimeError(f"POST {path} failed after {retries} attempts: {last_err}")
+
+    def authenticate(self, retries: int = 4) -> str:
+        last_err: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                r = self.session.post(
+                    self._url("/api/User/GetUserAuthencate"),
+                    json={
+                        "useR_LOGIN_ID": self.login_id,
+                        "useR_PWD": self.password,
+                        "useR_TYPE": self.user_type,
+                    },
+                    timeout=self.timeout,
+                    verify=self.verify_ssl,
+                )
+                r.raise_for_status()
+                if not (r.text or "").strip():
+                    raise RuntimeError("empty auth response body")
+                payload = r.json()
+                # IGR sometimes returns ORA-01012 transiently
+                if isinstance(payload, dict) and payload.get("code") not in (None, 0, "0"):
+                    raise RuntimeError(
+                        f"auth code={payload.get('code')} message={payload.get('message')}")
+                token = _pick(payload, "token", "Token", "accessToken", "access_token",
+                              "jwt", "jwtToken", "authToken")
+                if not token and isinstance(payload, dict):
+                    info = payload.get("information") or payload.get("Information")
+                    if isinstance(info, dict):
+                        token = _pick(info, "token", "Token", "accessToken", "access_token")
+                if not token and isinstance(payload, str):
+                    token = payload
+                if not token and isinstance(payload, dict):
+                    inner = _unwrap(payload)
+                    token = _pick(inner, "token", "Token", "accessToken", "access_token",
+                                  "jwt", "jwtToken", "authToken")
+                    if not token and isinstance(inner, str):
+                        token = inner
+                    if not token and isinstance(inner, dict):
+                        info = inner.get("information") or inner.get("Information")
+                        if isinstance(info, dict):
+                            token = _pick(info, "token", "Token")
+                if not token:
+                    raise RuntimeError(
+                        f"Authenticate succeeded but no token found in response: {payload!r}")
+                self.token = str(token).strip()
+                return self.token
+            except Exception as e:
+                last_err = e
+                wait = min(2 ** attempt, 16)
+                print(f"[auth] attempt {attempt}/{retries} failed: {e}; "
+                      f"retry in {wait}s", flush=True)
+                time.sleep(wait)
+        raise RuntimeError(f"Authenticate failed after {retries} attempts: {last_err}")
 
     def get_reg_nos_by_date(self, from_date: str, to_date: str) -> list[dict]:
         """POST GetDeedRegNoDetail. Dates as in Postman: '15-Jan-2002'."""
-        r = self.session.post(
-            self._url("/api/Deed/GetDeedRegNoDetail"),
-            headers=self._auth_headers(),
-            json={"fromDate": from_date, "toDate": to_date},
-            timeout=self.timeout,
-            verify=self.verify_ssl,
+        raw = self._post_json(
+            "/api/Deed/GetDeedRegNoDetail",
+            {"fromDate": from_date, "toDate": to_date},
         )
-        r.raise_for_status()
-        data = _unwrap(r.json())
+        data = _unwrap(raw)
         if isinstance(data, dict):
             for key in ("list", "List", "items", "Items", "records", "Records",
-                        "regNoDetails", "RegNoDetails"):
+                        "regNoDetails", "RegNoDetails", "data", "Data"):
                 if isinstance(data.get(key), list):
                     data = data[key]
                     break
             else:
+                # single object or envelope with null data
+                if data.get("data") is None and data.get("information") is None:
+                    return []
                 data = [data]
         if not isinstance(data, list):
             return []
@@ -227,13 +270,16 @@ class SarvamClient:
         for row in data:
             if not isinstance(row, dict):
                 continue
+            # skip envelope-looking dicts
+            if set(k.lower() for k in row) <= {"data", "code", "message", "information"}:
+                continue
             reg = _pick(row, "registrationNo", "registration_no", "regNo",
                         "reg_no", "RegistrationNo", "deedNo", "deed_no")
             if not reg:
                 continue
             book = _pick(row, "bookNo", "book_no", "book", "BookNo", "bookNumber")
             out.append({
-                "registration_no": str(reg).strip(),
+                "registration_no": normalize_reg_no(reg),
                 "book_no": _as_book_int(book),
                 "raw": row,
             })
@@ -245,7 +291,9 @@ class SarvamClient:
         Live IGR envelope puts the deed object in `data` (dict), with
         `information` usually null. Empty/removed deeds return data=null.
         """
-        reg = str(registration_no).strip()
+        reg = normalize_reg_no(registration_no)
+        if not reg:
+            return {"registration_no": "", "_empty": True}
         bodies = [
             {"registrationNo": reg},
             {"RegistrationNo": reg},
@@ -262,7 +310,13 @@ class SarvamClient:
             if r.status_code >= 400:
                 # alternate body shapes can 400 — try the next
                 continue
-            raw = r.json()
+            if not (r.text or "").strip():
+                # IGR occasionally returns HTTP 200 with an empty body
+                continue
+            try:
+                raw = r.json()
+            except ValueError:
+                continue
             last_raw = raw
             self.last_raw = raw
             candidate = None
@@ -299,7 +353,7 @@ class SarvamClient:
         r = self.session.post(
             self._url("/api/Deed/GetDeedScanCopy"),
             headers=self._auth_headers(),
-            json={"registrationNo": str(registration_no).strip()},
+            json={"registrationNo": normalize_reg_no(registration_no)},
             timeout=self.timeout,
             verify=self.verify_ssl,
         )

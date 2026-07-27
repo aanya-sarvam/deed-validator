@@ -1,0 +1,154 @@
+[auth] https://erp.igrodisha.gov.in/igrone
+[auth] ok
+[dates] querying 711 calendar days (2000–2006, step=5)
+  [date 50/711] 01-Jul-2000: pool=1585 by_book={1: 818, 4: 560, 3: 207} empty_days=2
+  [date 100/711] 31-Dec-2000: pool=3005 by_book={1: 1575, 4: 1065, 3: 365} empty_days=9
+  [date 150/711] 29-Jun-2001: pool=4801 by_book={1: 2467, 4: 1767, 3: 567} empty_days=14
+  [date 200/711] 28-Dec-2001: pool=6170 by_book={1: 3249, 4: 2239, 3: 682} empty_days=19
+  [date 250/711] 27-Jun-2002: pool=7890 by_book={1: 4148, 4: 2832, 3: 910} empty_days=23
+  [date 300/711] 26-Dec-2002: pool=9138 by_book={1: 4856, 4: 3217, 3: 1065} empty_days=26
+  [date 350/711] 24-Jun-2003: pool=10558 by_book={1: 5598, 4: 3702, 3: 1258} empty_days=32
+  [date 400/711] 21-Dec-2003: pool=11975 by_book={1: 6313, 4: 4192, 3: 1470} empty_days=36
+  [date 450/711] 13-Jun-2004: pool=13350 by_book={1: 6995, 4: 4688, 3: 1667} empty_days=42
+  [date 500/711] 10-Dec-2004: pool=14894 by_book={1: 7707, 4: 5267, 3: 1920} empty_days=47
+  [date 550/711] 01-Jun-2005: pool=16713 by_book={1: 8412, 4: 6096, 3: 2205} empty_days=48
+  [date 600/711] 30-Nov-2005: pool=18517 by_book={1: 9125, 4: 6894, 3: 2498} empty_days=52
+  [date 650/711] 24-May-2006: pool=20523 by_book={1: 9868, 4: 7837, 3: 2818} empty_days=58
+  [date 700/711] 20-Nov-2006: pool=22266 by_book={1: 10546, 4: 8629, 3: 3091} empty_days=59
+  [date 711/711] 30-Dec-2006: pool=22739 by_book={1: 10702, 4: 8887, 3: 3150} empty_days=61
+[pool] 22739 unique Book 1/3/4 registration numbers
+[fetch] target=2500 quotas={1: 1200, 3: 650, 4: 650} district_cap=200 office_cap=100
+  [selected 50/2500] books={1: 50} districts=18 offices=41 empty_skips=0 cap_skips=0 fetched=50
+  [selected 100/2500] books={1: 100} districts=24 offices=67 empty_skips=0 cap_skips=0 fetched=100
+  [selected 150/2500] books={1: 150} districts=25 offices=79 empty_skips=0 cap_skips=0 fetched=150
+  [selected 200/2500] books={1: 200} districts=27 offices=93 empty_skips=0 cap_skips=0 fetched=200
+  [selected 250/2500] books={1: 250} districts=28 offices=102 empty_skips=0 cap_skips=0 fetched=250
+  [selected 300/2500] books={1: 300} districts=28 offices=111 empty_skips=0 cap_skips=0 fetched=300
+  [selected 350/2500] books={1: 350} districts=28 offices=117 empty_skips=0 cap_skips=0 fetched=350
+  [selected 400/2500] books={1: 400} districts=28 offices=122 empty_skips=0 cap_skips=0 fetched=400
+  [selected 450/2500] books={1: 450} districts=28 offices=125 empty_skips=0 cap_skips=0 fetched=450
+  [selected 500/2500] books={1: 500} districts=28 offices=128 empty_skips=0 cap_skips=0 fetched=500
+  [selected 550/2500] books={1: 550} districts=28 offices=128 empty_skips=0 cap_skips=0 fetched=550
+  [selected 600/2500] books={1: 600} districts=29 offices=131 empty_skips=0 cap_skips=0 fetched=600
+  [selected 650/2500] books={1: 650} districts=29 offices=135 empty_skips=0 cap_skips=0 fetched=650
+  [selected 700/2500] books={1: 700} districts=29 offices=136 empty_skips=0 cap_skips=0 fetched=700
+  [selected 750/2500] books={1: 750} districts=30 offices=142 empty_skips=0 cap_skips=0 fetched=750
+  [selected 800/2500] books={1: 800} districts=30 offices=145 empty_skips=0 cap_skips=0 fetched=800
+  [selected 850/2500] books={1: 850} districts=30 offices=147 empty_skips=0 cap_skips=0 fetched=850
+  [selected 900/2500] books={1: 900} districts=30 offices=147 empty_skips=0 cap_skips=0 fetched=900
+  [selected 950/2500] books={1: 950} districts=30 offices=147 empty_skips=0 cap_skips=0 fetched=950
+  [selected 1000/2500] books={1: 1000} districts=30 offices=149 empty_skips=0 cap_skips=0 fetched=1000
+  [selected 1050/2500] books={1: 1050} districts=30 offices=150 empty_skips=0 cap_skips=0 fetched=1050
+  [selected 1100/2500] books={1: 1100} districts=30 offices=150 empty_skips=0 cap_skips=0 fetched=1100
+  [selected 1150/2500] books={1: 1150} districts=30 offices=150 empty_skips=0 cap_skips=0 fetched=1150
+  [selected 1200/2500] books={1: 1200} districts=30 offices=150 empty_skips=0 cap_skips=0 fetched=1200
+  [selected 1250/2500] books={1: 1200, 3: 50} districts=30 offices=151 empty_skips=0 cap_skips=0 fetched=1250
+  [selected 1300/2500] books={1: 1200, 3: 100} districts=30 offices=151 empty_skips=0 cap_skips=0 fetched=1300
+  [selected 1350/2500] books={1: 1200, 3: 150} districts=30 offices=152 empty_skips=0 cap_skips=0 fetched=1350
+  [selected 1400/2500] books={1: 1200, 3: 200} districts=30 offices=154 empty_skips=0 cap_skips=0 fetched=1400
+  [selected 1450/2500] books={1: 1200, 3: 250} districts=30 offices=154 empty_skips=0 cap_skips=0 fetched=1450
+  [selected 1500/2500] books={1: 1200, 3: 300} districts=30 offices=154 empty_skips=0 cap_skips=0 fetched=1500
+  [selected 1550/2500] books={1: 1200, 3: 350} districts=30 offices=154 empty_skips=0 cap_skips=16 fetched=1566
+  [selected 1600/2500] books={1: 1200, 3: 400} districts=30 offices=154 empty_skips=0 cap_skips=40 fetched=1640
+  [selected 1650/2500] books={1: 1200, 3: 450} districts=30 offices=155 empty_skips=0 cap_skips=67 fetched=1717
+  [selected 1700/2500] books={1: 1200, 3: 500} districts=30 offices=156 empty_skips=0 cap_skips=97 fetched=1797
+  [selected 1750/2500] books={1: 1200, 3: 550} districts=30 offices=156 empty_skips=0 cap_skips=119 fetched=1869
+  [selected 1800/2500] books={1: 1200, 3: 600} districts=30 offices=157 empty_skips=0 cap_skips=144 fetched=1944
+  [selected 1850/2500] books={1: 1200, 3: 650} districts=30 offices=157 empty_skips=0 cap_skips=169 fetched=2019
+  [selected 1900/2500] books={1: 1200, 3: 650, 4: 50} districts=30 offices=157 empty_skips=0 cap_skips=216 fetched=2116
+  [selected 1950/2500] books={1: 1200, 3: 650, 4: 100} districts=30 offices=157 empty_skips=0 cap_skips=274 fetched=2224
+  [selected 2000/2500] books={1: 1200, 3: 650, 4: 150} districts=30 offices=157 empty_skips=0 cap_skips=323 fetched=2323
+  [selected 2050/2500] books={1: 1200, 3: 650, 4: 200} districts=30 offices=157 empty_skips=0 cap_skips=373 fetched=2423
+  [selected 2100/2500] books={1: 1200, 3: 650, 4: 250} districts=30 offices=157 empty_skips=0 cap_skips=438 fetched=2538
+  [selected 2150/2500] books={1: 1200, 3: 650, 4: 300} districts=30 offices=157 empty_skips=0 cap_skips=517 fetched=2667
+  [selected 2200/2500] books={1: 1200, 3: 650, 4: 350} districts=30 offices=157 empty_skips=0 cap_skips=617 fetched=2817
+  [selected 2250/2500] books={1: 1200, 3: 650, 4: 400} districts=30 offices=157 empty_skips=0 cap_skips=750 fetched=3000
+  [selected 2300/2500] books={1: 1200, 3: 650, 4: 450} districts=30 offices=157 empty_skips=0 cap_skips=873 fetched=3173
+  [selected 2350/2500] books={1: 1200, 3: 650, 4: 500} districts=30 offices=157 empty_skips=0 cap_skips=1015 fetched=3365
+  [selected 2400/2500] books={1: 1200, 3: 650, 4: 550} districts=30 offices=158 empty_skips=0 cap_skips=1134 fetched=3534
+  [selected 2450/2500] books={1: 1200, 3: 650, 4: 600} districts=30 offices=158 empty_skips=0 cap_skips=1352 fetched=3802
+  [selected 2500/2500] books={1: 1200, 3: 650, 4: 650} districts=30 offices=158 empty_skips=0 cap_skips=1577 fetched=4077
+
+wrote data/mismatches/igr_diverse_sample.json
+wrote data/mismatches/igr_diverse_sample.csv
+wrote data/mismatches/igr_diverse_sample_reg_nos.txt
+{
+  "count": 2500,
+  "by_book": {
+    "1": 1200,
+    "3": 650,
+    "4": 650
+  },
+  "by_district": {
+    "GANJAM": 200,
+    "KHORDHA": 200,
+    "PURI": 200,
+    "KATAKA": 200,
+    "BALESHWAR": 178,
+    "JAJPUR": 142,
+    "KORAPUT": 139,
+    "SAMBALPUR": 105,
+    "JHARSUGUDA": 104,
+    "BHADRAK": 97,
+    "BALANGIR": 95,
+    "SUBARNAPUR": 87,
+    "MAYURBHANJ": 80,
+    "KENDRAPADA": 79,
+    "SUNDARAGADA": 79,
+    "NAYAGADA": 75,
+    "JAGATSINGHPUR": 71,
+    "KALAHANDI": 53,
+    "KENDUJHAR": 49,
+    "GAJAPATI": 45,
+    "RAYAGADA": 35,
+    "BARAGADA": 35,
+    "NABARANGPUR": 34,
+    "DHENKANAL": 28,
+    "BOUDH": 24,
+    "NUAPADA": 21,
+    "ANUGOLA": 14,
+    "DEBAGADA": 12,
+    "MALKANGIRI": 11,
+    "KANDHAMALA": 8
+  },
+  "by_office_top30": {
+    "KATAKA": 100,
+    "SAMBALPUR": 100,
+    "JHARSUGUDA": 100,
+    "PURI": 92,
+    "KHORDHA(BBSR)": 87,
+    "JAYAPUR": 78,
+    "MAYURBHANJ": 72,
+    "BALANGIR": 71,
+    "SUNDARAGADA": 64,
+    "BALESHWAR": 56,
+    "KHANDAGIRI": 50,
+    "NAYAGADA": 49,
+    "BHABANIPATANA": 45,
+    "PARALAKHEMUNDI": 44,
+    "KENDUJHAR": 38,
+    "CHHATRAPUR": 37,
+    "PIPILI": 34,
+    "JAJPUR": 33,
+    "DOLIPUR": 31,
+    "BARACHANA": 29,
+    "RAYAGADA": 28,
+    "SONPUR": 28,
+    "KUJANGA": 27,
+    "BRAHMAPUR-I": 26,
+    "BASUDEVPUR": 26,
+    "NABARANGPUR": 26,
+    "KENDRAPADA": 24,
+    "CHANDBALI": 23,
+    "JAGATPUR": 23,
+    "JALESWAR": 23
+  },
+  "district_count": 30,
+  "office_count": 158,
+  "date_span": {
+    "min_listed_on": "01-Apr-2001",
+    "max_listed_on": "31-Oct-2005",
+    "min_registration_date": "01-Apr-2001",
+    "max_registration_date": "31-Oct-2005"
+  }
+}
