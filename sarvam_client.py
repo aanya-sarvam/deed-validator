@@ -36,6 +36,34 @@ _ENVELOPE_KEYS = {
 }
 
 
+def normalize_reg_no(value: Any) -> str:
+    """Coerce GCS/API reg ids to the digit string IGR expects.
+
+    JSONL sometimes stores reg_no as a JSON number (or "….0"); str(float)
+    would produce '910010000401.0' which GetDeedInfoByRegNo treats as unknown.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value != value:  # NaN
+            return ""
+        return str(int(value)) if value == int(value) else str(value).strip()
+    s = str(value).strip()
+    if re.fullmatch(r"\d+\.0+", s):
+        return s.split(".", 1)[0]
+    # scientific notation from bad float round-trips
+    if re.fullmatch(r"\d+(\.\d+)?[eE][+-]?\d+", s):
+        try:
+            return str(int(float(s)))
+        except ValueError:
+            return s
+    return s
+
+
 def is_empty_deed_payload(deed: Any) -> bool:
     """True when GetDeedInfoByRegNo has no usable deed fields.
 
