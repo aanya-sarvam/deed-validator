@@ -113,9 +113,27 @@ transliterate the English into Odia yourself, and never invent a spelling that i
   page and copy it exactly - Odia glyphs if written in Odia (e.g. "SUHANI" -> ସୁହାନୀ), or the
   Latin form if the deed only prints it in English (e.g. "SUHANI" -> Suhani).
 - PLACE NAMES (village / AT / PO / PS / district): copy the on-page spelling in its script.
+  The database's anglicized spelling and the page's own spelling of the SAME place can
+  legitimately differ (e.g. "BERHAMPUR" in the metadata vs "Brahmapur" written on the page -
+  same town, different anglicization convention). Do not reject a match just because the
+  spellings differ letter-for-letter; if the on-page place name is a recognizable spelling
+  variant / alternate transliteration of the same place, treat it as a match, transcribe what
+  is on the page, and note the spelling difference in "notes" rather than marking not found.
+  Only mark not found if the place named on the page is actually a DIFFERENT place, not merely
+  a different spelling of the same one.
 - DEED TYPE / RELATION words: copy the term as written, INCLUDING short forms actually on the
   page (e.g. ପି:/ପିତା for father, ସ୍ୱା:/ସ୍ତ୍ରୀ for spouse, ଉଇଲ for WILL). Do not expand an
   abbreviation that is written short.
+- DEED TYPE (id "deed_type") IS SPECIAL - do not apply strict verbatim-match or the GENERIC
+  placeholder rule to it. Unlike other fields, deed_type is a DATABASE CATEGORY LABEL, not a
+  proper noun the page necessarily repeats: the page almost always carries SOME deed-category
+  term near the top / in the title, even when the assigned english_value is a catch-all like
+  "OTHER DEED"/"MISC", or does not lexically match the page's own heading (e.g. english_value
+  "RECONVEYANCE OF MORTGAGE" but the page reads "Continuing Mortgage Bond"). In BOTH cases:
+  still locate the page's own deed-category term near the top and TRANSCRIBE it verbatim
+  (Odia glyphs if that's the script used), set "found": true, and note the mismatch in
+  "notes" (e.g. "page's own label differs from assigned category"). Only set "found": false
+  for deed_type if there is truly no deed-category heading/term anywhere on the page.
 - NUMBERS, AMOUNTS, DATES: transcribe VERBATIM in whatever script the page uses. Odia digits
   (୦୧୨୩୪୫୬୭୮୯) stay Odia; Arabic digits (0-9) stay Arabic; words stay words. NEVER convert
   between numeral systems and never reformat separators (keep dots/slashes/hyphens exactly,
