@@ -1,45 +1,41 @@
-# Prompt refine (GCS + realtime Gemini)
+# Prompt refine → batch on the 2500 GCS sample
 
-Iterate on the Odia grounding prompt **before** submitting a Vertex batch job.
+## Workflow
+
+1. We already sampled **2500 diverse deeds from GCS**  
+   (`data/mismatches/gcs_diverse_sample.json` + `…_reg_nos.txt`).
+2. Pick **10 of those 2500**, run **realtime Gemini**, refine `prompt.py`.
+3. When found-rates look good, run **batch Gemini on all 2500**.
+
+Render is not involved — pages and grounding come from GCS.
 
 ## What is omitted from the prompt
 
-These metadata ids are **never** sent as locate/transcribe targets:
-
-| id | reason |
-|----|--------|
-| `registration_no` | identifier, not useful page text to ground |
-| `book_no` / book number / `book_label` | book classification, not page text |
-| `listed_on` | wrong id — value is promoted to `execution_date` instead |
-
-If metadata only has `listed_on`, it is sent as `execution_date` (label
-"Execution date"). The id `listed_on` never appears in the prompt.
+| id | behaviour |
+|----|-----------|
+| `registration_no` | never sent |
+| `book_no` / book number / `book_label` | never sent |
+| `listed_on` | never sent as that id — value promoted to `execution_date` |
 
 ## Files
 
 - `prompt.py` — system instruction + `build_user_prompt`
-- `grounding_realtime_gemini.py` — sample from GCS, call Gemini realtime
-- `grounding_batch_gemini.py` — same prompt/targets for the later batch job
+- `grounding_realtime_gemini.py` — 10-of-2500 realtime refine loop
+- `grounding_batch_gemini.py` — batch job (use for the full 2500)
 - `test_prompt_targets.py` — smoke checks (no cloud needed)
 
-## Run (direct GCS — no Render)
+## 1) Refine on 10 (from the 2500)
 
 ```bash
 export GCS_BUCKET=classification-vision
 export GCS_CREDENTIALS_JSON='...'   # service-account JSON
 export GCS_RAW_PREFIX=ocr_outputs/orissa_deeds
-# Vertex: same SA (or ADC) must call Gemini on GCP_PROJECT
 export GCP_PROJECT=vision-projects-463307
 
-# Dry-run: sample 10 deeds, download pages, write prompts only
-python3 grounding_realtime_gemini.py --n 10 --dry-run \
-  --out-dir data/prompt_refine
+# Default: pick 10 diverse regs FROM data/mismatches/gcs_diverse_sample.json
+python3 grounding_realtime_gemini.py --n 10 --out-dir data/prompt_refine
 
-# Realtime Gemini on those 10
-python3 grounding_realtime_gemini.py --n 10 \
-  --out-dir data/prompt_refine
-
-# Re-run a fixed list after prompt edits
+# After editing prompt.py, re-run the SAME 10:
 python3 grounding_realtime_gemini.py \
   --deeds data/prompt_refine/sample_reg_nos.txt \
   --out-dir data/prompt_refine
@@ -47,9 +43,19 @@ python3 grounding_realtime_gemini.py \
 
 Outputs under `data/prompt_refine/`:
 
-- `sample_reg_nos.txt` / `sample_groundings.json`
+- `sample_reg_nos.txt` — the 10 chosen from the 2500
 - `prompts/<reg>__cN.txt` — exact prompt text sent
 - `realtime_results.jsonl` / `realtime_fields.csv` / `realtime_summary.json`
 
-When found-rates look solid, switch to `grounding_batch_gemini.py` for the
-full corpus.
+## 2) Batch the full 2500
+
+Once the prompt is solid:
+
+```bash
+python3 grounding_batch_gemini.py \
+  --deeds data/mismatches/gcs_diverse_sample_reg_nos.txt \
+  --tag gcs2500
+```
+
+(Plus whatever `--pages-manifest` / `--metadata` paths your local batch
+setup uses — see `grounding_batch_gemini.py`.)

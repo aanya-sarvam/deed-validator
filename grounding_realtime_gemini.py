@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Realtime (non-batch) Gemini grounding for prompt refinement.
 
-Pulls page images + metadata directly from GCS (no Render), builds the
-prompt from ``prompt.py``, and calls Vertex Gemini ``generate_content``
-synchronously so we can iterate on the prompt quickly before a batch job.
+Intended workflow
+-----------------
+1. We already have a diverse 2500-deed GCS sample
+   (``data/mismatches/gcs_diverse_sample.json``).
+2. Pick ~10 of those for realtime Gemini + prompt iteration.
+3. Once the prompt looks solid, run ``grounding_batch_gemini.py`` on the
+   full 2500 (``--deeds data/mismatches/gcs_diverse_sample_reg_nos.txt``).
+
+Pulls page images + metadata directly from GCS (no Render).
 
 Required env
 ------------
@@ -15,14 +21,18 @@ Required env
 
 Examples
 --------
-  # Pick 10 diverse deeds from the GCS raw corpus and run realtime:
+  # Default: 10 diverse deeds FROM the existing 2500 GCS sample:
   python3 grounding_realtime_gemini.py --n 10 --out-dir data/prompt_refine
 
-  # Re-run a fixed list of reg_nos (one per line):
-  python3 grounding_realtime_gemini.py --deeds data/prompt_refine/sample10_reg_nos.txt
+  # Re-run the same 10 after editing prompt.py:
+  python3 grounding_realtime_gemini.py \\
+      --deeds data/prompt_refine/sample_reg_nos.txt
 
-  # Dry-run: download pages + build prompts, do not call Gemini:
+  # Dry-run (pages + prompts only, no Gemini):
   python3 grounding_realtime_gemini.py --n 10 --dry-run
+
+  # Later — batch the full 2500 with the refined prompt:
+  python3 grounding_batch_gemini.py --deeds data/mismatches/gcs_diverse_sample_reg_nos.txt
 """
 
 from __future__ import annotations
@@ -235,10 +245,64 @@ def raw_party_blobs_from_grounding(g: dict) -> dict:
 
 
 # ----------------------------------------------------------------------------
-# Diverse sample of N deeds from GCS
+# Sample N deeds from the existing 2500 GCS diverse sample (or whole corpus)
 # ----------------------------------------------------------------------------
+DEFAULT_GCS_SAMPLE_JSON = Path("data/mismatches/gcs_diverse_sample.json")
+DEFAULT_GCS_SAMPLE_REGS = Path("data/mismatches/gcs_diverse_sample_reg_nos.txt")
+
+
+def _load_sample_pool(sample_json: Path) -> list[dict]:
+    """Load the 2500-deed GCS sample index (reg_no + book/district metadata)."""
+    if not sample_json.exists():
+        sys.exit(f"ERROR: sample pool not found: {sample_json}")
+    data = json.loads(sample_json.read_text(encoding="utf-8"))
+    deeds = data.get("deeds") if isinstance(data, dict) else data
+    if not isinstance(deeds, list) or not deeds:
+        sys.exit(f"ERROR: no deeds in {sample_json}")
+    return deeds
+
+
+def pick_regs_from_pool(pool: list[dict], n: int, seed: int = 42) -> list[str]:
+    """Diverse pick of N reg_nos from the 2500 sample (book × district)."""
+    random.seed(seed)
+    buckets: dict[tuple, list] = defaultdict(list)
+    for row in pool:
+        reg = normalize_reg_no(row.get("registration_no") or row.get("reg_no"))
+        if not reg:
+            continue
+        book = row.get("book_no") or 0
+        try:
+            book = int(book)
+        except (TypeError, ValueError):
+            book = 0
+        label = (row.get("book_label") or "").upper() or "?"
+        dist = (row.get("district") or "UNKNOWN").upper()
+        buckets[(book, label, dist)].append(reg)
+
+    keys = sorted(buckets.keys(), key=lambda k: (-len(buckets[k]), k))
+    for k in keys:
+        random.shuffle(buckets[k])
+
+    picked: list[str] = []
+    seen: set[str] = set()
+    while len(picked) < n and any(buckets[k] for k in keys):
+        for k in keys:
+            if len(picked) >= n:
+                break
+            while buckets[k]:
+                reg = buckets[k].pop()
+                if reg in seen:
+                    continue
+                seen.add(reg)
+                picked.append(reg)
+                break
+    print(f"[sample] pool={len(pool)} buckets={len(buckets)} picked={len(picked)}",
+          flush=True)
+    return picked
+
+
 def sample_diverse(n: int, seed: int = 42, pool_scan: int = 5000) -> list[dict]:
-    """Reservoir-style diverse pick across book_label / district."""
+    """Fallback: diverse pick by scanning the raw GCS grounding JSONL."""
     random.seed(seed)
     buckets: dict[tuple, list] = defaultdict(list)
     scanned = 0
@@ -251,7 +315,6 @@ def sample_diverse(n: int, seed: int = 42, pool_scan: int = 5000) -> list[dict]:
         buckets[(book, label, dist)].append(g)
     print(f"[sample] scanned={scanned} buckets={len(buckets)}", flush=True)
 
-    # Round-robin across buckets for diversity
     keys = sorted(buckets.keys(), key=lambda k: (-len(buckets[k]), k))
     for k in keys:
         random.shuffle(buckets[k])
@@ -266,7 +329,6 @@ def sample_diverse(n: int, seed: int = 42, pool_scan: int = 5000) -> list[dict]:
                 reg = g["reg_no"]
                 if reg in seen_reg:
                     continue
-                # Must have at least one page image
                 entry = gcs_store.pages_entry(reg)
                 pages = (entry or {}).get("pages") or []
                 if not pages:
@@ -286,10 +348,12 @@ def load_groundings_for_regs(regs: list[str]) -> list[dict]:
     for g in iter_raw_groundings():
         reg = g["reg_no"]
         if reg in want and reg not in found:
+            entry = gcs_store.pages_entry(reg)
+            pages = (entry or {}).get("pages") or []
+            g["_n_pages"] = len(pages)
             found[reg] = g
             if len(found) >= len(want):
                 break
-    # Preserve input order
     out = []
     for r in regs:
         reg = normalize_reg_no(r)
@@ -298,6 +362,15 @@ def load_groundings_for_regs(regs: list[str]) -> list[dict]:
         else:
             print(f"[warn] reg_no not in GCS grounding jsonl: {reg}", flush=True)
     return out
+
+
+def sample_from_gcs_pool(sample_json: Path, n: int, seed: int = 42) -> list[dict]:
+    """Pick N diverse reg_nos from the 2500 sample, load grounding from GCS."""
+    pool = _load_sample_pool(sample_json)
+    regs = pick_regs_from_pool(pool, n=n, seed=seed)
+    print(f"[sample] loading grounding for {len(regs)} regs from GCS jsonl…",
+          flush=True)
+    return load_groundings_for_regs(regs)
 
 
 # ----------------------------------------------------------------------------
@@ -470,13 +543,22 @@ def summarize(results: list[dict]) -> dict:
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Realtime Gemini grounding over GCS deed pages (no Render)")
-    ap.add_argument("--n", type=int, default=10, help="number of diverse deeds")
+        description="Realtime Gemini grounding: refine prompt on ~10 of the "
+                    "2500 GCS-sampled deeds (no Render)")
+    ap.add_argument("--n", type=int, default=10,
+                    help="how many deeds to take from the 2500 GCS sample")
+    ap.add_argument("--from-sample", type=Path, default=DEFAULT_GCS_SAMPLE_JSON,
+                    help="2500-deed GCS sample JSON to pick --n from "
+                         f"(default: {DEFAULT_GCS_SAMPLE_JSON})")
     ap.add_argument("--deeds", type=Path, default=None,
-                    help="file of reg_nos (one per line); skips diverse sampling")
+                    help="file of reg_nos (one per line); skips sampling "
+                         "(use after the first run to re-test the same 10)")
+    ap.add_argument("--from-corpus", action="store_true",
+                    help="ignore --from-sample; pick --n from the full GCS "
+                         "grounding jsonl instead of the 2500 sample")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--pool-scan", type=int, default=5000,
-                    help="how many grounding lines to scan when sampling")
+                    help="with --from-corpus: how many grounding lines to scan")
     ap.add_argument("--out-dir", type=Path, default=Path("data/prompt_refine"))
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--thinking-level", default=DEFAULT_THINKING)
@@ -498,9 +580,13 @@ def main():
         ]
         print(f"[deeds] {len(regs)} reg_nos from {args.deeds}", flush=True)
         groundings = load_groundings_for_regs(regs)
-    else:
-        print(f"[sample] selecting {args.n} diverse deeds from GCS…", flush=True)
+    elif args.from_corpus:
+        print(f"[sample] selecting {args.n} from full GCS corpus…", flush=True)
         groundings = sample_diverse(args.n, seed=args.seed, pool_scan=args.pool_scan)
+    else:
+        print(f"[sample] selecting {args.n} from 2500-deed GCS sample "
+              f"({args.from_sample})…", flush=True)
+        groundings = sample_from_gcs_pool(args.from_sample, n=args.n, seed=args.seed)
 
     reg_list = [g["reg_no"] for g in groundings]
     (args.out_dir / "sample_reg_nos.txt").write_text(
