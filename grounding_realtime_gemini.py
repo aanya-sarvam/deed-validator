@@ -95,7 +95,7 @@ def iter_raw_groundings(limit: int | None = None):
         if not blob.exists():
             print(f"[gcs] missing {path}", flush=True)
             continue
-        with blob.open("rt") as fh:
+        with blob.open("rt", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:

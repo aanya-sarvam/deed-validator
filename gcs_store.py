@@ -317,7 +317,7 @@ def _pages_for_reg_no(reg_no):
         if not blob.exists():
             continue
         try:
-            with blob.open("rt") as fh:   # streams from GCS; no full-text buffer
+            with blob.open("rt", encoding="utf-8") as fh:   # streams from GCS; no full-text buffer
                 for line in fh:
                     line = line.strip()
                     if not line:
