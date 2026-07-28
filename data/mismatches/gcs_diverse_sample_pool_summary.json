@@ -1,0 +1,10 @@
+{
+  "mode": "render_streaming_select",
+  "selected": 2500,
+  "by_book": {
+    "1": 1200,
+    "4": 650,
+    "3": 650
+  },
+  "elapsed_sec": 2442.6
+}
