@@ -60,11 +60,15 @@ FIELD_LABEL_TO_KEY = {
     "deed type": "deed_type",
     "district": "district",
     "registration office": "office",
+    "office": "office",
+    "sro": "office",
+    "sub registrar office": "office",
     "registration date": "registration_date",
     "presentation date": "presentation_date",
     "consideration amount": "consideration_amount",
     "old registration no": "old_reg_no",
     "old reg no": "old_reg_no",
+    "old reg. no": "old_reg_no",
 }
 
 
@@ -86,6 +90,12 @@ def infer_book(book_label: str | None, deed_type: str | None) -> int | None:
     for book in (1, 3, 4):
         if any(kw in blob for kw in BOOK_CATEGORY_KEYWORDS[book]):
             return book
+    # Broader Book-4 catch for MISC corpus types that aren't POA/agreement.
+    if any(k in blob for k in (
+        "other deed", "trust", "partnership", "affidavit", "marriage",
+        "cancellation", "reconveyance", "bond",
+    )):
+        return 4
     return None
 
 
@@ -145,39 +155,53 @@ def render_login(base_url: str, username: str, password: str) -> str:
     return token
 
 
-def render_list_documents(base_url: str, token: str) -> list[dict]:
+def render_list_documents(base_url: str, token: str, workers: int = 8) -> list[dict]:
     """Page through /api/search as admin to list the ingested GCS corpus."""
     if requests is None:
         raise RuntimeError("requests package required for --source render")
     base = base_url.rstrip("/")
     headers = {"Authorization": f"Bearer {token}"}
-    # FastAPI Depends(current_user) also accepts ?token=
     per_page = 100
-    page = 1
-    out: list[dict] = []
-    total = None
-    while True:
-        r = requests.get(
+    # First page to learn total
+    r = requests.get(
+        f"{base}/api/search",
+        params={"token": token, "page": 1, "per_page": per_page,
+                "sort_by": "deed_number", "sort_order": "asc"},
+        headers=headers,
+        timeout=120,
+    )
+    r.raise_for_status()
+    payload = r.json()
+    total = payload.get("total", 0)
+    out = list(payload.get("results") or [])
+    print(f"[render] corpus size={total}", flush=True)
+    pages = list(range(2, (total + per_page - 1) // per_page + 1))
+
+    def fetch_page(page: int) -> list[dict]:
+        resp = requests.get(
             f"{base}/api/search",
             params={"token": token, "page": page, "per_page": per_page,
                     "sort_by": "deed_number", "sort_order": "asc"},
             headers=headers,
             timeout=120,
         )
-        r.raise_for_status()
-        payload = r.json()
-        if total is None:
-            total = payload.get("total", 0)
-            print(f"[render] corpus size={total}", flush=True)
-        batch = payload.get("results") or []
-        if not batch:
-            break
-        out.extend(batch)
-        if page % 20 == 0 or len(out) >= total:
-            print(f"[render] listed {len(out)}/{total}", flush=True)
-        if len(out) >= total:
-            break
-        page += 1
+        resp.raise_for_status()
+        return resp.json().get("results") or []
+
+    done_pages = 1
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futs = {pool.submit(fetch_page, p): p for p in pages}
+        # Keep results ordered by page for reproducibility of later shuffles
+        by_page: dict[int, list[dict]] = {}
+        for fut in as_completed(futs):
+            page = futs[fut]
+            by_page[page] = fut.result()
+            done_pages += 1
+            if done_pages % 20 == 0 or done_pages == 1 + len(pages):
+                n = len(out) + sum(len(v) for v in by_page.values())
+                print(f"[render] listed ~{n}/{total}", flush=True)
+        for page in sorted(by_page):
+            out.extend(by_page[page])
     return out
 
 
@@ -253,7 +277,7 @@ def load_from_render(args, target: int, book_targets: dict[int, int],
     print(f"[render] logging in at {args.render_url}", flush=True)
     token = args.render_token or render_login(
         args.render_url, args.render_user, args.render_password)
-    listed = render_list_documents(args.render_url, token)
+    listed = render_list_documents(args.render_url, token, workers=max(4, args.workers // 2))
 
     by_book: dict[int, list[dict]] = defaultdict(list)
     skipped = 0
@@ -278,6 +302,9 @@ def load_from_render(args, target: int, book_targets: dict[int, int],
     batch_size = max(workers * 2, 32)
 
     idxs = {1: 0, 3: 0, 4: 0}
+    # Round-robin so Book 1 geo-caps don't starve Books 3/4.
+    rr_order = [1, 3, 4]
+    rr_pos = 0
 
     def take_batch(book: int, n: int) -> list[dict]:
         start = idxs[book]
@@ -286,14 +313,22 @@ def load_from_render(args, target: int, book_targets: dict[int, int],
         return by_book[book][start:end]
 
     while len(selected) < target:
-        need_books = [b for b in (1, 3, 4)
+        need_books = [b for b in rr_order
                       if counts[b] < book_targets.get(b, 0) and idxs[b] < len(by_book[b])]
         if not need_books:
             break
-        need_books.sort(key=lambda b: (book_targets.get(b, 0) - counts[b]), reverse=True)
-        book = need_books[0]
-        want = min(batch_size, book_targets.get(book, 0) - counts[book] + batch_size // 2)
-        batch = take_batch(book, max(want, workers))
+        # Advance round-robin among books that still need rows.
+        book = None
+        for _ in range(len(rr_order)):
+            cand = rr_order[rr_pos % len(rr_order)]
+            rr_pos += 1
+            if cand in need_books:
+                book = cand
+                break
+        if book is None:
+            break
+        remaining = book_targets.get(book, 0) - counts[book]
+        batch = take_batch(book, max(min(batch_size, remaining + workers), workers))
         if not batch:
             continue
 
@@ -310,14 +345,14 @@ def load_from_render(args, target: int, book_targets: dict[int, int],
                     continue
                 b = row["book_no"]
                 if counts[b] >= book_targets.get(b, 0):
-                    skipped_cap += 1
                     continue
                 district = row["district"]
                 office = row["office"]
-                if by_district[district] >= per_district_cap:
+                # Don't let a missing office/district burn the diversity budget.
+                if district != "UNKNOWN" and by_district[district] >= per_district_cap:
                     skipped_cap += 1
                     continue
-                if by_office[office] >= per_office_cap:
+                if office != "UNKNOWN" and by_office[office] >= per_office_cap:
                     skipped_cap += 1
                     continue
                 selected.append(row)
