@@ -72,12 +72,15 @@ MAX_DEED_PAGES = 20    # deeds with MORE than this many pages are skipped entire
 
 # Which tabular metadata columns become grounding targets, and their "type" hint.
 # type is a free-form hint passed to the model (see prompt.py HOW TO MATCH).
+# Intentionally omitted (never sent): registration_no, book_no / book number,
+# listed_on. Use execution_date (not listed_on) when an execution date exists.
 TABULAR_TARGETS = [
     ("deed_type", "Deed type", "deed_type"),
     ("district", "District", "place"),
     ("office", "Registration office", "place"),
     ("registration_date", "Registration date", "date"),
     ("presentation_date", "Presentation date", "date"),
+    ("execution_date", "Execution date", "date"),
     ("consideration_amount", "Consideration amount", "amount"),
     ("old_reg_no", "Old registration no", "number"),
 ]
@@ -130,9 +133,23 @@ def _is_generic(v: str) -> bool:
 
 
 def targets_from_tabular(meta: dict) -> list[dict]:
+    """Build scalar targets from tabular metadata.
+
+    Never emits registration_no, book_no / book number, or listed_on.
+    If metadata only has ``listed_on``, promote that value to
+    ``execution_date`` (listed_on is the wrong id — the page date we ground
+    is the deed execution date).
+    """
+    meta = dict(meta or {})
+    if _is_generic(str(meta.get("execution_date") or "")) and not _is_generic(
+            str(meta.get("listed_on") or "")):
+        meta["execution_date"] = str(meta.get("listed_on")).strip()
+
     out = []
     for col, label, typ in TABULAR_TARGETS:
-        val = (meta.get(col) or "").strip()
+        if col in grounding_prompt.OMITTED_TARGET_IDS:
+            continue
+        val = str(meta.get(col) or "").strip()
         if _is_generic(val):
             continue
         out.append({"id": col, "label": label, "value": val, "type": typ})
@@ -180,7 +197,9 @@ def targets_from_raw_json(raw) -> list[dict]:
 
 
 def build_targets(meta: dict, raw) -> list[dict]:
-    return targets_from_tabular(meta) + (targets_from_raw_json(raw) if raw is not None else [])
+    targets = targets_from_tabular(meta) + (
+        targets_from_raw_json(raw) if raw is not None else [])
+    return grounding_prompt.filter_targets(targets)
 
 
 # ----------------------------------------------------------------------------
@@ -227,6 +246,9 @@ def build_request(key: str, image_bytes_list: list[bytes], prompt_text: str,
     return {
         "key": key,
         "request": {
+            "systemInstruction": {
+                "parts": [{"text": grounding_prompt.SYSTEM_INSTRUCTION}],
+            },
             "contents": [{"parts": parts, "role": "user"}],
             "generationConfig": gen_cfg,
         },

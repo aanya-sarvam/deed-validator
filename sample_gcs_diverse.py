@@ -65,6 +65,7 @@ FIELD_LABEL_TO_KEY = {
     "sub registrar office": "office",
     "registration date": "registration_date",
     "presentation date": "presentation_date",
+    "execution date": "execution_date",
     "consideration amount": "consideration_amount",
     "old registration no": "old_reg_no",
     "old reg no": "old_reg_no",

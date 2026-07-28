@@ -1,3 +1,12 @@
 *.pyc
 __pycache__/
 data/mismatches/*_render_index.json
+data/prompt_refine/prompts/
+data/prompt_refine/*_grounding.json
+data/prompt_refine/realtime_*.jsonl
+data/prompt_refine/realtime_*.csv
+data/prompt_refine/realtime_*.json
+data/prompt_refine/sample_*.json
+data/prompt_refine/sample_*.txt
+!data/prompt_refine/README.md
+static/scans/

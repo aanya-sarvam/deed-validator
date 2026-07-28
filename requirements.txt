@@ -3,5 +3,7 @@ uvicorn
 psycopg[binary]
 bcrypt
 google-cloud-storage
+google-genai
 Pillow
 requests
+pypdfium2
