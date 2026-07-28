@@ -155,53 +155,54 @@ def render_login(base_url: str, username: str, password: str) -> str:
     return token
 
 
-def render_list_documents(base_url: str, token: str, workers: int = 8) -> list[dict]:
-    """Page through /api/search as admin to list the ingested GCS corpus."""
+def render_list_documents(base_url: str, token: str, workers: int = 1) -> list[dict]:
+    """Page through /api/search as admin to list the ingested GCS corpus.
+
+    Uses sequential paging with retries — parallel page fetches overload the
+    free-tier Render instance (500s around page ~100).
+    """
     if requests is None:
         raise RuntimeError("requests package required for --source render")
     base = base_url.rstrip("/")
-    headers = {"Authorization": f"Bearer {token}"}
     per_page = 100
-    # First page to learn total
-    r = requests.get(
-        f"{base}/api/search",
-        params={"token": token, "page": 1, "per_page": per_page,
-                "sort_by": "deed_number", "sort_order": "asc"},
-        headers=headers,
-        timeout=120,
-    )
-    r.raise_for_status()
-    payload = r.json()
-    total = payload.get("total", 0)
-    out = list(payload.get("results") or [])
-    print(f"[render] corpus size={total}", flush=True)
-    pages = list(range(2, (total + per_page - 1) // per_page + 1))
-
-    def fetch_page(page: int) -> list[dict]:
-        resp = requests.get(
-            f"{base}/api/search",
-            params={"token": token, "page": page, "per_page": per_page,
-                    "sort_by": "deed_number", "sort_order": "asc"},
-            headers=headers,
-            timeout=120,
-        )
-        resp.raise_for_status()
-        return resp.json().get("results") or []
-
-    done_pages = 1
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futs = {pool.submit(fetch_page, p): p for p in pages}
-        # Keep results ordered by page for reproducibility of later shuffles
-        by_page: dict[int, list[dict]] = {}
-        for fut in as_completed(futs):
-            page = futs[fut]
-            by_page[page] = fut.result()
-            done_pages += 1
-            if done_pages % 20 == 0 or done_pages == 1 + len(pages):
-                n = len(out) + sum(len(v) for v in by_page.values())
-                print(f"[render] listed ~{n}/{total}", flush=True)
-        for page in sorted(by_page):
-            out.extend(by_page[page])
+    out: list[dict] = []
+    total = None
+    page = 1
+    while True:
+        payload = None
+        last_err = None
+        for attempt in range(5):
+            try:
+                r = requests.get(
+                    f"{base}/api/search",
+                    params={"token": token, "page": page, "per_page": per_page,
+                            "sort_by": "id", "sort_order": "asc"},
+                    timeout=120,
+                )
+                if r.status_code >= 500:
+                    last_err = f"HTTP {r.status_code}"
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                r.raise_for_status()
+                payload = r.json()
+                break
+            except Exception as e:
+                last_err = str(e)
+                time.sleep(1.5 * (attempt + 1))
+        if payload is None:
+            raise RuntimeError(f"search page {page} failed after retries: {last_err}")
+        if total is None:
+            total = payload.get("total", 0)
+            print(f"[render] corpus size={total}", flush=True)
+        batch = payload.get("results") or []
+        if not batch:
+            break
+        out.extend(batch)
+        if page % 20 == 0 or len(out) >= total:
+            print(f"[render] listed {len(out)}/{total}", flush=True)
+        if len(out) >= total:
+            break
+        page += 1
     return out
 
 
@@ -223,14 +224,30 @@ def _fields_to_scalars(fields: list[dict]) -> dict[str, str]:
 def render_fetch_detail(base_url: str, token: str, doc_id: int) -> dict | None:
     if requests is None:
         return None
-    r = requests.get(
-        f"{base_url.rstrip('/')}/api/documents/{doc_id}",
-        params={"token": token},
-        timeout=60,
-    )
-    if r.status_code != 200:
+    last_err = None
+    for attempt in range(4):
+        try:
+            r = requests.get(
+                f"{base_url.rstrip('/')}/api/documents/{doc_id}",
+                params={"token": token},
+                timeout=60,
+            )
+            if r.status_code >= 500:
+                last_err = f"HTTP {r.status_code}"
+                time.sleep(0.8 * (attempt + 1))
+                continue
+            if r.status_code != 200:
+                return None
+            payload = r.json()
+            break
+        except Exception as e:
+            last_err = str(e)
+            time.sleep(0.8 * (attempt + 1))
+            payload = None
+    else:
         return None
-    payload = r.json()
+    if not payload:
+        return None
     doc = payload.get("document") or {}
     scalars = _fields_to_scalars(payload.get("fields") or [])
     src_meta = doc.get("src_meta") or {}
@@ -277,7 +294,25 @@ def load_from_render(args, target: int, book_targets: dict[int, int],
     print(f"[render] logging in at {args.render_url}", flush=True)
     token = args.render_token or render_login(
         args.render_url, args.render_user, args.render_password)
-    listed = render_list_documents(args.render_url, token, workers=max(4, args.workers // 2))
+
+    cache_path = Path(args.out).with_name(Path(args.out).stem + "_render_index.json")
+    listed = None
+    if cache_path.exists() and not getattr(args, "refresh_index", False):
+        try:
+            listed = json.loads(cache_path.read_text(encoding="utf-8"))
+            print(f"[render] loaded cached index {cache_path} ({len(listed)} rows)",
+                  flush=True)
+        except Exception:
+            listed = None
+    if listed is None:
+        listed = render_list_documents(args.render_url, token)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(listed), encoding="utf-8")
+        print(f"[render] wrote index cache {cache_path}", flush=True)
+
+    # Lower concurrency — free Render OOMs/500s under heavy parallel load.
+    workers = max(1, min(args.workers, 8))
+    args.workers = workers
 
     by_book: dict[int, list[dict]] = defaultdict(list)
     skipped = 0
@@ -416,10 +451,10 @@ def select_diverse(
                     break
                 district = row["district"]
                 office = row["office"]
-                if by_district[district] >= per_district_cap:
+                if district != "UNKNOWN" and by_district[district] >= per_district_cap:
                     skipped_cap += 1
                     continue
-                if by_office[office] >= per_office_cap:
+                if office != "UNKNOWN" and by_office[office] >= per_office_cap:
                     skipped_cap += 1
                     continue
                 selected.append(row)
@@ -504,8 +539,10 @@ def parse_args(argv=None):
                    default=os.environ.get("RENDER_PASSWORD", "sarvam123"))
     p.add_argument("--render-token", default=os.environ.get("RENDER_TOKEN", ""),
                    help="Skip login if you already have an admin session token")
-    p.add_argument("--workers", type=int, default=16,
-                   help="Parallel document fetches for --source render")
+    p.add_argument("--workers", type=int, default=8,
+                   help="Parallel document fetches for --source render (capped at 8)")
+    p.add_argument("--refresh-index", action="store_true",
+                   help="Ignore cached Render search index and re-list")
     p.add_argument("--target", type=int, default=2500)
     p.add_argument("--book1", type=int, default=1200)
     p.add_argument("--book3", type=int, default=650)
