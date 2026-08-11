@@ -1411,6 +1411,59 @@ def admin_dashboard(user=Depends(require_admin)):
             "total_edits": edits, "unassigned_pending": unassigned}
 
 
+@app.get("/api/admin/vertex-progress")
+def vertex_progress(user=Depends(require_admin)):
+    """Progress + accuracy tracker scoped to the vertex mismatch batch
+    (source='vertex') only. Reports how many of the ~1002 newly added deeds
+    are validated vs pending, how many needed corrections, and the correction
+    rate (share of completed deeds where the expert edited at least one field
+    — i.e. how often Gemini's extraction was wrong on this batch). 'done' =
+    status in validated/reviewed/in_monitor_review; a deed counts as corrected
+    if it has any edit_log 'edit' action."""
+    done_states = ("validated", "reviewed", "in_monitor_review")
+    pending_states = ("pending", "in_review")
+    with connect() as con:
+        by_status = {r["status"]: r["c"] for r in con.execute(
+            "SELECT status, COUNT(*) c FROM documents WHERE source='vertex' "
+            "GROUP BY status")}
+        agg = con.execute(
+            "SELECT COUNT(*) total, "
+            "COUNT(*) FILTER (WHERE status = ANY(%(done)s)) done, "
+            "COUNT(*) FILTER (WHERE status = ANY(%(pending)s)) pending, "
+            "COUNT(*) FILTER (WHERE status='flagged') flagged, "
+            "COUNT(*) FILTER (WHERE assigned_to IS NOT NULL) assigned, "
+            "COUNT(*) FILTER (WHERE status = ANY(%(done)s) AND EXISTS ("
+            "  SELECT 1 FROM edit_log e WHERE e.document_id=documents.id "
+            "  AND e.action='edit')) corrected "
+            "FROM documents WHERE source='vertex'",
+            {"done": list(done_states), "pending": list(pending_states)}).fetchone()
+        field_edits = con.execute(
+            "SELECT COUNT(*) c FROM edit_log e JOIN documents d ON d.id=e.document_id "
+            "WHERE d.source='vertex' AND e.action='edit'").fetchone()["c"]
+        experts = [dict(r) for r in con.execute(
+            "SELECT u.id, u.full_name, "
+            "COUNT(d.id) assigned, "
+            "COUNT(d.id) FILTER (WHERE d.status = ANY(%(done)s)) done, "
+            "COUNT(d.id) FILTER (WHERE d.status = ANY(%(pending)s)) remaining, "
+            "COUNT(d.id) FILTER (WHERE d.status = ANY(%(done)s) AND EXISTS ("
+            "  SELECT 1 FROM edit_log e WHERE e.document_id=d.id AND e.action='edit'"
+            ")) corrected "
+            "FROM users u LEFT JOIN documents d "
+            "  ON d.assigned_to=u.id AND d.source='vertex' "
+            "WHERE u.role='expert' GROUP BY u.id, u.full_name "
+            "ORDER BY done DESC, u.id",
+            {"done": list(done_states), "pending": list(pending_states)}).fetchall()]
+    total = agg["total"]
+    done = agg["done"]
+    correction_rate = round(agg["corrected"] / done * 100) if done else 0
+    return {"total": total, "assigned": agg["assigned"],
+            "unassigned": total - agg["assigned"], "done": done,
+            "pending": agg["pending"], "flagged": agg["flagged"],
+            "corrected": agg["corrected"], "field_edits": field_edits,
+            "correction_rate": correction_rate, "by_status": by_status,
+            "experts": experts}
+
+
 class NewUser(BaseModel):
     username: str
     password: str

@@ -39,6 +39,7 @@ USAGE
 """
 
 import json
+import os
 import re
 import shutil
 import sys
@@ -591,7 +592,15 @@ def ingest_gcs_vertex(init=True, progress=None):
             for v in pages_by_deed.values():
                 v.sort(key=lambda x: x[0])
 
-    con = connect()
+    import psycopg
+
+    def _fresh():
+        # keepalives reduce idle drops; autocommit-style per-row commits below
+        # make a mid-run disconnect lose at most the current row (which re-runs
+        # skip anyway), instead of a whole uncommitted batch.
+        return connect()
+
+    con = _fresh()
     loaded = skipped = failed = 0
     try:
         existing = {r["deed_number"] for r in
@@ -602,45 +611,68 @@ def ingest_gcs_vertex(init=True, progress=None):
         for n, line in enumerate(lines, 1):
             try:
                 g = json.loads(line)
-                reg_no = str(g.get("reg_no") or "").strip()
-                if not reg_no:
-                    failed += 1
-                    continue
-                if reg_no in existing:
-                    skipped += 1
-                    continue
-                pages = pages_by_deed.get(reg_no)
-                full_text = None
-                if pages:
-                    parts = [f"— Page {pg} —\n{txt}".strip() for pg, txt in pages if txt]
-                    full_text = "\n\n".join(parts) or None
-                # There IS a source scan for every mismatch deed (page PNGs in
-                # inputs/grounding/images/<reg>/), so flag has_pdf regardless of OCR.
-                ok = _insert_from_grounding(con, g, full_text, f"{reg_no}.pdf",
-                                            source="vertex")
-                if ok:
-                    loaded += 1
-                    existing.add(reg_no)
-                elif ok is False:
-                    skipped += 1
-                else:
-                    failed += 1
-                if n % 200 == 0:
-                    con.commit()
-                    print(f"[gcs-vertex] {n}/{len(lines)} ({loaded} loaded)", flush=True)
-                    if progress:
-                        progress(n, len(lines), loaded)
-            except Exception as e:
+            except json.JSONDecodeError:
                 failed += 1
+                continue
+            reg_no = str(g.get("reg_no") or "").strip()
+            if not reg_no:
+                failed += 1
+                continue
+            if reg_no in existing:
+                skipped += 1
+                continue
+            pages = pages_by_deed.get(reg_no)
+            full_text = None
+            if pages:
+                parts = [f"— Page {pg} —\n{txt}".strip() for pg, txt in pages if txt]
+                full_text = "\n\n".join(parts) or None
+
+            # Insert with reconnect-and-retry: on a dropped/lost connection,
+            # rebuild it and retry this one deed once before giving up on it.
+            for attempt in (1, 2):
                 try:
-                    con.rollback()
-                except Exception:
-                    pass
-                print(f"[gcs-vertex] failed line {n} ({locals().get('reg_no', '?')}): {e}",
-                      flush=True)
-        con.commit()
+                    ok = _insert_from_grounding(con, g, full_text, f"{reg_no}.pdf",
+                                                source="vertex")
+                    con.commit()   # commit each deed so progress always persists
+                    if ok:
+                        loaded += 1
+                        existing.add(reg_no)
+                    elif ok is False:
+                        skipped += 1
+                    else:
+                        failed += 1
+                    break
+                except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+                    print(f"[gcs-vertex] connection dropped at line {n} "
+                          f"({reg_no}), reconnecting (attempt {attempt}): {e}",
+                          flush=True)
+                    try:
+                        con.close()
+                    except Exception:
+                        pass
+                    if attempt == 2:
+                        failed += 1
+                    else:
+                        con = _fresh()
+                except Exception as e:
+                    try:
+                        con.rollback()
+                    except Exception:
+                        con = _fresh()
+                    failed += 1
+                    print(f"[gcs-vertex] failed line {n} ({reg_no}): {e}", flush=True)
+                    break
+
+            if n % 100 == 0:
+                print(f"[gcs-vertex] {n}/{len(lines)} ({loaded} loaded, "
+                      f"{skipped} skipped, {failed} failed)", flush=True)
+                if progress:
+                    progress(n, len(lines), loaded)
     finally:
-        con.close()
+        try:
+            con.close()
+        except Exception:
+            pass
     print(f"[gcs-vertex] done: {loaded} loaded, {skipped} already present, "
           f"{failed} failed", flush=True)
     return loaded

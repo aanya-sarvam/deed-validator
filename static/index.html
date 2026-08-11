@@ -373,13 +373,6 @@
           <option value="4">Book 4</option>
         </select>
       </div>
-      <div class="grp">Metadata
-        <select id="f_mismatch" onchange="runSearch(1)">
-          <option value="">All</option>
-          <option value="1">API mismatches only</option>
-          <option value="0">No API mismatch</option>
-        </select>
-      </div>
       <div class="grp">Batch
         <select id="f_source" onchange="runSearch(1)">
           <option value="">All</option>
@@ -698,7 +691,6 @@ async function runSearch(page) {
     assigned: ($('f_assigned') ? $('f_assigned').value : ''),
     status: $('f_status').value,
     book: ($('f_book') ? $('f_book').value : ''),
-    mismatches: ($('f_mismatch') ? $('f_mismatch').value : ''),
     source: ($('f_source') ? $('f_source').value : ''),
     page: PAGE, per_page: $('per_page').value });
   const d = await api('/search?' + p);
@@ -1726,7 +1718,10 @@ async function loadMonitor() {
 }
 
 async function loadProgress() {
-  const s = await api('/admin/dashboard');
+  const [s, mm] = await Promise.all([
+    api('/admin/dashboard'),
+    api('/admin/vertex-progress').catch(() => null)
+  ]);
   const v = k => s.by_status[k] || 0;
   const pct = s.total ? Math.round(v('validated') / s.total * 100) : 0;
   const cards = `<div class="cards">
@@ -1755,8 +1750,34 @@ async function loadProgress() {
   const flaggedRows = s.flagged.map(f =>
     `<tr><td class="mono">${f.deed_number}</td><td>${f.flag_reason || '—'}</td><td>${f.flagged_by || '—'}</td></tr>`).join('')
     || '<tr><td colspan="3">None</td></tr>';
+
+  // ----- Mismatch batch (newly added vertex deeds) -----
+  let mmBlock = '';
+  if (mm && mm.total) {
+    const pctDone = mm.total ? Math.round(mm.done / mm.total * 100) : 0;
+    const mmCards = `<div class="cards">
+      <div class="card"><div class="num">${mm.total}</div><div class="lbl">Batch total</div></div>
+      <div class="card"><div class="num">${mm.done}</div><div class="lbl">Validated</div></div>
+      <div class="card"><div class="num">${mm.pending}</div><div class="lbl">Pending</div></div>
+      <div class="card"><div class="num">${mm.corrected}</div><div class="lbl">Deeds corrected</div></div>
+      <div class="card"><div class="num">${mm.correction_rate}%</div><div class="lbl">Correction rate</div></div>
+      <div class="card"><div class="num">${mm.field_edits}</div><div class="lbl">Field edits</div></div>
+    </div>
+    <div class="pbar"><div style="width:${pctDone}%"></div></div>
+    <p style="color:var(--muted);font-size:0.8333rem">${pctDone}% of batch validated · ${mm.unassigned} unassigned · ${mm.flagged} flagged · correction rate = deeds corrected ÷ validated</p>`;
+    const mmRows = mm.experts.map(e => {
+      const r = e.done ? Math.round(e.corrected / e.done * 100) : 0;
+      return `<tr><td>${e.full_name}</td><td>${e.remaining} / ${e.assigned}</td>
+        <td>${e.done}</td><td>${e.corrected}</td><td>${r}%</td></tr>`;
+    }).join('') || '<tr><td colspan="5">Not assigned yet</td></tr>';
+    mmBlock = `<h2>Mismatch batch (newly added deeds)</h2>${mmCards}
+      <table class="stats"><thead><tr><th>Expert</th><th>Open / assigned</th>
+        <th>Validated</th><th>Corrected</th><th>Correction rate</th></tr></thead>
+        <tbody>${mmRows}</tbody></table>`;
+  }
   $('progress').innerHTML = `
     <h1>Dashboard</h1>${cards}
+    ${mmBlock}
     <h2>Experts</h2>
     <table class="stats"><thead><tr><th>Expert</th><th>Assigned (open / total)</th>
       <th>Validated</th><th>Today</th><th>Last 7 days</th><th>Corrections</th>
