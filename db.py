@@ -124,6 +124,15 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS api_mismatch_detail JSONB;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS api_book_no INT;
 CREATE INDEX IF NOT EXISTS idx_docs_api_mismatch ON documents(has_api_mismatch)
     WHERE has_api_mismatch = TRUE;
+
+-- Gemini-vs-input mismatch batch (the 502): float assigned mismatch deeds to
+-- the top of the assignee's queue, independent of assignment/status ordering.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS is_priority BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_docs_priority ON documents(is_priority) WHERE is_priority = TRUE;
+-- Which GCS source a deed's scans/data live in, so images/data route to the
+-- right bucket+credentials: 'classification' (existing corpus) | 'vertex'
+-- (vision-vertex-batch-asia-south1).
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'classification';
 """
 
 SEED_USERS = [

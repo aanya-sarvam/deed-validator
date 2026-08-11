@@ -278,6 +278,11 @@ def _run_incremental_ingest():
             _progress("checking raw orissa_deeds export on GCS")
             print("[reingest] checking raw orissa_deeds export on GCS...", flush=True)
             ingest_gcs_raw(init=False, progress=_gcs_raw_progress)
+        if gcs_store.vertex_enabled():
+            from ingest_json import ingest_gcs_vertex
+            _progress("checking vertex-batch mismatch deeds on GCS")
+            print("[reingest] checking vertex-batch mismatch deeds on GCS...", flush=True)
+            ingest_gcs_vertex(init=False, progress=_gcs_raw_progress)
         groundings = glob.glob("data/**/grounding.json", recursive=True)
         if groundings:
             from ingest_json import ingest_dir
@@ -619,7 +624,7 @@ def get_pages(doc_id: int, user=Depends(current_user)):
     which is simpler and means the server never holds more than one page's
     bytes in memory at a time."""
     with connect() as con:
-        doc = con.execute("SELECT deed_number, pdf_file FROM documents WHERE id = %s",
+        doc = con.execute("SELECT deed_number, pdf_file, source FROM documents WHERE id = %s",
                           (doc_id,)).fetchone()
     if not doc:
         raise HTTPException(404, "Document not found")
@@ -634,9 +639,10 @@ def get_pages(doc_id: int, user=Depends(current_user)):
         except Exception as e:
             raise HTTPException(502, f"Could not check for pre-made PDF: {e}")
     import gcs_store
-    if gcs_store.enabled():
+    if gcs_store.enabled() or gcs_store.vertex_enabled():
         try:
-            entry = gcs_store.pages_entry(doc["deed_number"])
+            entry = gcs_store.pages_entry(
+                doc["deed_number"], source=doc.get("source", "classification"))
         except Exception as e:
             raise HTTPException(502, f"Could not look up scan pages: {e}")
         if entry:
@@ -657,15 +663,16 @@ def get_page_image(doc_id: int, page_num: int, user=Depends(current_user)):
     assembly, no decode/re-encode. Cached to local disk per page so a
     reopened deed doesn't re-hit GCS."""
     with connect() as con:
-        doc = con.execute("SELECT deed_number FROM documents WHERE id = %s",
+        doc = con.execute("SELECT deed_number, source FROM documents WHERE id = %s",
                           (doc_id,)).fetchone()
     if not doc:
         raise HTTPException(404, "Document not found")
     import gcs_store
-    if not gcs_store.enabled():
+    if not (gcs_store.enabled() or gcs_store.vertex_enabled()):
         raise HTTPException(404, "No scan source configured")
     try:
-        data, content_type = gcs_store.fetch_page_image(doc["deed_number"], page_num)
+        data, content_type = gcs_store.fetch_page_image(
+            doc["deed_number"], page_num, source=doc.get("source", "classification"))
     except Exception as e:
         raise HTTPException(502, f"Could not fetch page image: {e}")
     if data is None:
@@ -718,7 +725,7 @@ PARTY_NAME_SQL = ("(SELECT string_agg(current_value, E'\\n' ORDER BY position) F
 @app.get("/api/search")
 def search(q: str = "", field: str = "deed_number", status: str = "",
            assigned: str = "", sort_by: str = "", sort_order: str = "asc",
-           mismatches: str = "", book: str = "",
+           mismatches: str = "", book: str = "", source: str = "",
            page: int = 1, per_page: int = 10, user=Depends(current_user)):
     where, params = [], []
     q = q.strip()
@@ -741,6 +748,9 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
         where.append("d.has_api_mismatch = TRUE")
     elif mismatches in ("0", "false", "no"):
         where.append("d.has_api_mismatch = FALSE")
+    # source filter → view the vertex mismatch batch apart from the existing corpus
+    if source in ("vertex", "classification"):
+        where.append("d.source = %s"); params.append(source)
     if book.isdigit():
         where.append("(d.api_book_no = %s OR d.book_no = %s)"); params.extend(
             [int(book), int(book)])
@@ -770,7 +780,13 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
     # in_review (mid-way) -> pending -> flagged -> validated.
     expert_priority = (user["role"] == "expert" and sort_by in ("", "id", None))
     if expert_priority:
-        order_sql = ("CASE d.status WHEN 'in_review' THEN 0 WHEN 'pending' THEN 1 "
+        # Priority deeds (the 502 Gemini-mismatch batch) float to the very top
+        # of the assignee's queue while there's still work on them; once
+        # validated they drop back into the normal order (validated = bottom),
+        # so completed priority deeds don't pile up above pending work.
+        order_sql = ("CASE WHEN d.is_priority AND d.status IN ('pending','in_review','flagged') "
+                     "THEN 0 ELSE 1 END, "
+                     "CASE d.status WHEN 'in_review' THEN 0 WHEN 'pending' THEN 1 "
                      "WHEN 'flagged' THEN 2 WHEN 'validated' THEN 3 ELSE 4 END, d.year, d.id")
     else:
         order_sql = f"{order_col} {order}, d.id"
@@ -1137,6 +1153,132 @@ def assign_one(doc_id: int, body: AssignOneIn, user=Depends(require_admin)):
                     (body.expert_id, doc_id))
         con.commit()
     return {"ok": True}
+
+
+class AssignRegnosIn(BaseModel):
+    expert_id: int
+    reg_nos: list[str]
+    priority: bool = True
+    unassign_others: bool = False   # optional: clear their other pending work first
+
+
+@app.post("/api/admin/assign-regnos")
+def assign_regnos(body: AssignRegnosIn, user=Depends(require_admin)):
+    """Assign a SPECIFIC set of deeds (by deed_number) to one expert and,
+    by default, mark them priority so they appear first in that expert's
+    queue. Keys on deed_number (stable across re-ingest), so the same 502
+    list keeps working no matter when the rows were loaded. Idempotent:
+    re-running just re-affirms assignment/priority."""
+    regs = [str(r).strip() for r in body.reg_nos if str(r).strip()]
+    if not regs:
+        raise HTTPException(400, "reg_nos empty")
+    with connect() as con:
+        if not con.execute("SELECT 1 FROM users WHERE id=%s AND role='expert'",
+                           (body.expert_id,)).fetchone():
+            raise HTTPException(404, "Expert not found")
+        if body.unassign_others:
+            # return this expert's not-yet-started, non-priority deeds to the pool
+            con.execute(
+                "UPDATE documents SET assigned_to = NULL "
+                "WHERE assigned_to = %s AND status = 'pending' AND is_priority = FALSE",
+                (body.expert_id,))
+        rows = con.execute(
+            "UPDATE documents SET assigned_to = %s, is_priority = %s "
+            "WHERE deed_number = ANY(%s) RETURNING id",
+            (body.expert_id, body.priority, regs)).fetchall()
+        con.commit()
+    return {"assigned": len(rows), "requested": len(regs),
+            "not_found": len(regs) - len(rows)}
+
+
+class AssignRegnosSplitIn(BaseModel):
+    reg_nos: list[str]
+    priority: bool = True
+    expert_ids: list[int] | None = None   # None = all experts, round-robin
+
+
+@app.post("/api/admin/assign-regnos-split")
+def assign_regnos_split(body: AssignRegnosSplitIn, user=Depends(require_admin)):
+    """Same as assign-regnos but round-robins the reg_nos across several
+    experts (all experts by default), so the 502 get split roughly evenly
+    and each still surfaces first in its assignee's queue."""
+    regs = [str(r).strip() for r in body.reg_nos if str(r).strip()]
+    if not regs:
+        raise HTTPException(400, "reg_nos empty")
+    with connect() as con:
+        if body.expert_ids:
+            experts = [r["id"] for r in con.execute(
+                "SELECT id FROM users WHERE role='expert' AND id = ANY(%s) ORDER BY id",
+                (body.expert_ids,)).fetchall()]
+        else:
+            experts = [r["id"] for r in con.execute(
+                "SELECT id FROM users WHERE role='expert' ORDER BY id").fetchall()]
+        if not experts:
+            raise HTTPException(404, "No experts found")
+        buckets = {eid: [] for eid in experts}
+        for i, reg in enumerate(regs):
+            buckets[experts[i % len(experts)]].append(reg)
+        total = 0
+        for eid, group in buckets.items():
+            if not group:
+                continue
+            rows = con.execute(
+                "UPDATE documents SET assigned_to = %s, is_priority = %s "
+                "WHERE deed_number = ANY(%s) RETURNING id",
+                (eid, body.priority, group)).fetchall()
+            total += len(rows)
+        con.commit()
+    return {"assigned": total, "requested": len(regs),
+            "experts": experts}
+
+
+class AssignVertexBatchIn(BaseModel):
+    expert_ids: list[int] | None = None   # None = all experts, round-robin
+
+
+@app.post("/api/admin/assign-vertex-batch")
+def assign_vertex_batch(body: AssignVertexBatchIn, user=Depends(require_admin)):
+    """Assign and prioritize the entire uploaded vertex batch (mismatches +
+    random coverage) as ONE group: every source='vertex' deed is assigned
+    round-robin across experts and flagged is_priority=TRUE, so the whole
+    batch floats to the top of each assignee's queue ahead of any existing
+    corpus work. Order within the batch doesn't matter — they sit together
+    in the priority tier and drop out individually as they're validated.
+    Because source='vertex' defines the group, no reg_no lists are needed to
+    assign, prioritize, or (via the ?source=vertex filter) view them apart
+    from the existing corpus. Idempotent: re-running re-affirms the setup."""
+    with connect() as con:
+        if body.expert_ids:
+            experts = [r["id"] for r in con.execute(
+                "SELECT id FROM users WHERE role='expert' AND id = ANY(%s) ORDER BY id",
+                (body.expert_ids,)).fetchall()]
+        else:
+            experts = [r["id"] for r in con.execute(
+                "SELECT id FROM users WHERE role='expert' ORDER BY id").fetchall()]
+        if not experts:
+            raise HTTPException(404, "No experts found")
+        rows = con.execute(
+            "SELECT id FROM documents WHERE source='vertex' ORDER BY id").fetchall()
+        if not rows:
+            raise HTTPException(404, "No vertex-source deeds ingested yet — reingest first")
+        # round-robin assignment across experts
+        buckets = {eid: [] for eid in experts}
+        for i, r in enumerate(rows):
+            buckets[experts[i % len(experts)]].append(r["id"])
+        for eid, ids in buckets.items():
+            if ids:
+                con.execute("UPDATE documents SET assigned_to=%s WHERE id = ANY(%s)",
+                            (eid, ids))
+        # whole batch is the priority group
+        con.execute("UPDATE documents SET is_priority = TRUE WHERE source='vertex'")
+        con.commit()
+        breakdown = con.execute(
+            "SELECT a.full_name name, count(*) total "
+            "FROM documents d JOIN users a ON a.id = d.assigned_to "
+            "WHERE d.source='vertex' GROUP BY a.full_name ORDER BY a.full_name"
+        ).fetchall()
+    return {"experts": experts, "total_vertex": len(rows),
+            "breakdown": [dict(b) for b in breakdown]}
 
 
 class AssignIn(BaseModel):

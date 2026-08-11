@@ -43,6 +43,50 @@ def _get_bucket():
     return _bucket
 
 
+_client_vertex = None
+_bucket_vertex = None
+
+
+def vertex_enabled():
+    """True when the second (vertex-batch) GCS source is configured."""
+    return bool(os.environ.get("GCS_VERTEX_BUCKET"))
+
+
+def _get_bucket_vertex():
+    """Second GCS source: the vision-vertex-batch bucket that holds the 502
+    Gemini-mismatch deeds. Authenticated with its OWN service-account key
+    (GCS_VERTEX_CREDENTIALS_JSON) since the classification-vision reader SA
+    has no access here. This SA has roles/storage.objectViewer, which DOES
+    include storage.objects.list — so page discovery here can list folders
+    directly instead of probing filenames."""
+    global _client_vertex, _bucket_vertex
+    if _bucket_vertex is not None:
+        return _bucket_vertex
+    from google.cloud import storage
+    from google.oauth2 import service_account
+    creds_json = os.environ.get("GCS_VERTEX_CREDENTIALS_JSON")
+    if creds_json:
+        info = json.loads(creds_json)
+        creds = service_account.Credentials.from_service_account_info(info)
+        _client_vertex = storage.Client(credentials=creds,
+                                        project=info.get("project_id"))
+    else:
+        _client_vertex = storage.Client()  # ambient (local ADC) fallback
+    _bucket_vertex = _client_vertex.bucket(os.environ["GCS_VERTEX_BUCKET"])
+    return _bucket_vertex
+
+
+def _bucket_for(source):
+    """Pick the right authenticated bucket for a deed's source."""
+    return _get_bucket_vertex() if source == "vertex" else _get_bucket()
+
+
+def _vertex_images_prefix():
+    # Page PNGs live at <prefix>/<reg_no>/<page>.png
+    return os.environ.get("GCS_VERTEX_IMAGES_PREFIX",
+                          "inputs/grounding/images").strip("/")
+
+
 def _prefix():
     p = os.environ.get("GCS_PREFIX", "").strip("/")
     return p + "/" if p else ""
@@ -141,10 +185,11 @@ def blob_stat(abs_path):
     return {"exists": True, "size_bytes": blob.size}
 
 
-def read_text_abs(abs_path):
+def read_text_abs(abs_path, source="classification"):
     """Read a text object by bucket-root-relative path (ignores GCS_PREFIX,
-    unlike read_text() above). None if missing."""
-    bucket = _get_bucket()
+    unlike read_text() above). None if missing. `source` selects which bucket
+    +credentials to use ('classification' default | 'vertex')."""
+    bucket = _bucket_for(source)
     blob = bucket.blob(abs_path)
     if not blob.exists():
         return None
@@ -234,7 +279,41 @@ def _pages_via_listing(reg_no):
     return {"pages": pages}
 
 
-def _pages_for_reg_no(reg_no):
+def _pages_via_vertex_listing(reg_no):
+    """Page discovery for vertex-source deeds. Their SA has objectViewer
+    (list included), and page PNGs live at
+    <GCS_VERTEX_IMAGES_PREFIX>/<reg_no>/<name>.png — so just list the folder
+    (no filename-pattern guessing needed, unlike the classification probe).
+    Returns pages as [[page_num, images_prefix, rel_path], ...] where
+    rel_path is relative to the vertex bucket root, so fetch_page_image can
+    read bucket.blob(rel_path) directly on the vertex bucket."""
+    bucket = _get_bucket_vertex()
+    base = _vertex_images_prefix()
+    folder = f"{base}/{reg_no}/"
+    try:
+        blobs = list(bucket.list_blobs(prefix=folder))
+    except Exception as e:
+        print(f"[gcs-vertex] could not list {folder}: {e}")
+        return None
+    pages = []
+    for b in blobs:
+        name = b.name[len(folder):]
+        if not name or name.endswith("/"):
+            continue
+        m = _PAGE_NUM_RE.search(name)
+        pg = int(m.group(1)) if m else (len(pages) + 1)
+        pages.append([pg, base, f"{base}/{reg_no}/{name}"])
+    if not pages:
+        return None
+    pages.sort(key=lambda x: x[0])
+    # Renumber to a clean 1..N sequence so the frontend page controls line up
+    # even if filenames are 0-indexed or non-contiguous.
+    for i, p in enumerate(pages, 1):
+        p[0] = i
+    return {"pages": pages}
+
+
+def _pages_for_reg_no(reg_no, source="classification"):
     """Find pages:[[page, prefix, image_rel_path], ...] for one reg_no.
     Three-tier fallback, each one ground-truth (independent of whether
     ocr_dataset.jsonl has an entry for a given page), tried in order:
@@ -284,12 +363,24 @@ def _pages_for_reg_no(reg_no):
     one deed's page list, regardless of dataset size, at the cost of a
     network scan (now across all prefixes) on a not-yet-cached deed's first
     view."""
-    cache_file = Path("static/.raw_pages") / f"{reg_no}.json"
+    cache_file = Path("static/.raw_pages") / f"{source}_{reg_no}.json"
     if cache_file.exists():
         try:
             return json.loads(cache_file.read_text())
         except Exception:
             pass
+
+    # Vertex-source deeds (the 502 Gemini-mismatch batch) live in a different
+    # bucket with a different image layout; discover via listing (SA has list).
+    if source == "vertex":
+        vpages = _pages_via_vertex_listing(reg_no)
+        if vpages:
+            try:
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(json.dumps(vpages))
+            except Exception:
+                pass
+        return vpages
 
     listed = _pages_via_listing(reg_no)
     if listed:
@@ -354,21 +445,26 @@ def premade_pdf_exists(reg_no):
     return blob.exists()
 
 
-def pages_entry(reg_no):
+def pages_entry(reg_no, source="classification"):
     """Public wrapper around the per-deed page lookup, for callers that just
     need to know whether/how many raw pages a deed has."""
-    return _pages_for_reg_no(reg_no)
+    return _pages_for_reg_no(reg_no, source=source)
 
 
-def fetch_page_image(reg_no, page_num, cache_dir="static/scans/pages"):
+def fetch_page_image(reg_no, page_num, source="classification",
+                     cache_dir="static/scans/pages"):
     """Return (bytes, content_type) for ONE page image of reg_no. Caches
     that single page to local disk so re-viewing the same deed doesn't
     re-hit GCS. Never loads any other page or deed into memory — this is
     what replaced the old build-a-whole-PDF-per-deed approach: the frontend
     now requests pages one at a time and displays them as a sequence of
     images instead of a stitched document, so peak memory here is just this
-    one page's bytes, regardless of how many pages the deed has."""
-    entry = _pages_for_reg_no(reg_no)
+    one page's bytes, regardless of how many pages the deed has.
+
+    `source` routes to the right bucket+credentials. For vertex-source deeds
+    the listing already stored a bucket-root-relative rel_path, so the blob
+    is read directly (no prefix join)."""
+    entry = _pages_for_reg_no(reg_no, source=source)
     if not entry:
         return None, None
     match = next(((prefix, rel) for pg, prefix, rel in entry["pages"]
@@ -376,14 +472,16 @@ def fetch_page_image(reg_no, page_num, cache_dir="static/scans/pages"):
     if not match:
         return None, None
     prefix, rel = match
-    cache = Path(cache_dir) / reg_no
+    cache = Path(cache_dir) / f"{source}_{reg_no}"
     ext = Path(rel).suffix or ".jpg"
     local = cache / f"{page_num}{ext}"
     if local.exists() and local.stat().st_size > 0:
         data = local.read_bytes()
         return data, _content_type(data[:8])
-    bucket = _get_bucket()
-    blob = bucket.blob(f"{prefix}/{rel}")
+    bucket = _bucket_for(source)
+    # vertex rel_path is already bucket-root-relative; classification joins prefix
+    blob_path = rel if source == "vertex" else f"{prefix}/{rel}"
+    blob = bucket.blob(blob_path)
     if not blob.exists():
         return None, None
     data = blob.download_as_bytes()

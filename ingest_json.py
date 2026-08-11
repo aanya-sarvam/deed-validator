@@ -333,8 +333,10 @@ def ingest_dir(data_dir, scans_dir="static/scans", init=True):
     print(f"\ndone: {loaded} loaded, {skipped} already present")
 
 
-def _insert_from_grounding(con, g, full_text, pdf_name):
-    """Shared insert used by both local and GCS paths."""
+def _insert_from_grounding(con, g, full_text, pdf_name, source="classification"):
+    """Shared insert used by both local and GCS paths. `source` records which
+    GCS bucket/layout this deed's scans live in ('classification' | 'vertex')
+    so the viewer can route page fetches to the right bucket+credentials."""
     reg_no = str(g.get("reg_no") or "").strip()
     if not reg_no:
         return None
@@ -344,12 +346,12 @@ def _insert_from_grounding(con, g, full_text, pdf_name):
     src_meta = {k: v for k, v in g.items() if k != "fields"}
     doc_id = con.execute(
         "INSERT INTO documents (deed_number, deed_type, year, pdf_file, status, "
-        "digitized_text, digitized_status, src_meta) "
-        "VALUES (%s,%s,%s,%s,'pending',%s,%s,%s) RETURNING id",
+        "digitized_text, digitized_status, src_meta, source) "
+        "VALUES (%s,%s,%s,%s,'pending',%s,%s,%s,%s) RETURNING id",
         (reg_no, g.get("deed_type"), _year_from_fields(g.get("fields", [])),
          pdf_name, full_text,
          "ready" if full_text else "not_started",
-         json.dumps(src_meta))).fetchone()["id"]
+         json.dumps(src_meta), source)).fetchone()["id"]
     rows = []
     field_rows = _ensure_consideration_amount(_build_field_rows(g.get("fields", [])), g)
     for i, r in enumerate(field_rows):
@@ -536,6 +538,111 @@ def ingest_gcs_raw(init=True, progress=None):
         con.close()
     print(f"[gcs-raw] done: {loaded} loaded, {skipped} already present, {failed} failed",
           flush=True)
+    return loaded
+
+
+def ingest_gcs_vertex(init=True, progress=None):
+    """Ingest the Gemini-mismatch batch (the 502) from the vision-vertex-batch
+    bucket — a SECOND GCS source, read with its own service-account key.
+
+    Reads a single grounding JSONL you upload to the bucket (one deed per
+    line, same field shape as grounding_good_partial.jsonl:
+    {reg_no, deed_type, fields:[{id, attr, item_index, field, english_value,
+    odia_text, page}, ...]}). Path is GCS_VERTEX_GROUNDING (default
+    'outputs/grounding_good_partial.jsonl'); optional full text from
+    GCS_VERTEX_OCR (an ocr_dataset.jsonl). Rows are inserted with
+    source='vertex' so the viewer serves their page images from the vertex
+    bucket (inputs/grounding/images/<reg_no>/*.png). Safe to re-run:
+    existing deed_numbers are skipped.
+    """
+    import gcs_store
+    if not gcs_store.vertex_enabled():
+        print("[gcs-vertex] GCS_VERTEX_BUCKET not set — skipping", flush=True)
+        return 0
+    if init:
+        init_db()
+    gpath = os.environ.get("GCS_VERTEX_GROUNDING",
+                           "outputs/grounding_good_partial.jsonl")
+    print(f"[gcs-vertex] reading grounding from gs://{os.environ.get('GCS_VERTEX_BUCKET')}/{gpath}",
+          flush=True)
+    graw = gcs_store.read_text_abs(gpath, source="vertex")
+    if not graw:
+        print(f"[gcs-vertex] grounding file not found at {gpath}", flush=True)
+        return 0
+
+    # optional OCR full text
+    pages_by_deed = {}
+    opath = os.environ.get("GCS_VERTEX_OCR", "").strip()
+    if opath:
+        ocr_raw = gcs_store.read_text_abs(opath, source="vertex")
+        if ocr_raw:
+            for line in ocr_raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                rn = str(o.get("reg_no") or "")
+                if rn:
+                    pages_by_deed.setdefault(rn, []).append(
+                        (o.get("page", 0), o.get("text", "")))
+            for v in pages_by_deed.values():
+                v.sort(key=lambda x: x[0])
+
+    con = connect()
+    loaded = skipped = failed = 0
+    try:
+        existing = {r["deed_number"] for r in
+                    con.execute("SELECT deed_number FROM documents").fetchall()}
+        lines = [l for l in graw.splitlines() if l.strip()]
+        print(f"[gcs-vertex] {len(lines)} deeds in grounding file "
+              f"({len(existing)} already in DB)", flush=True)
+        for n, line in enumerate(lines, 1):
+            try:
+                g = json.loads(line)
+                reg_no = str(g.get("reg_no") or "").strip()
+                if not reg_no:
+                    failed += 1
+                    continue
+                if reg_no in existing:
+                    skipped += 1
+                    continue
+                pages = pages_by_deed.get(reg_no)
+                full_text = None
+                if pages:
+                    parts = [f"— Page {pg} —\n{txt}".strip() for pg, txt in pages if txt]
+                    full_text = "\n\n".join(parts) or None
+                # There IS a source scan for every mismatch deed (page PNGs in
+                # inputs/grounding/images/<reg>/), so flag has_pdf regardless of OCR.
+                ok = _insert_from_grounding(con, g, full_text, f"{reg_no}.pdf",
+                                            source="vertex")
+                if ok:
+                    loaded += 1
+                    existing.add(reg_no)
+                elif ok is False:
+                    skipped += 1
+                else:
+                    failed += 1
+                if n % 200 == 0:
+                    con.commit()
+                    print(f"[gcs-vertex] {n}/{len(lines)} ({loaded} loaded)", flush=True)
+                    if progress:
+                        progress(n, len(lines), loaded)
+            except Exception as e:
+                failed += 1
+                try:
+                    con.rollback()
+                except Exception:
+                    pass
+                print(f"[gcs-vertex] failed line {n} ({locals().get('reg_no', '?')}): {e}",
+                      flush=True)
+        con.commit()
+    finally:
+        con.close()
+    print(f"[gcs-vertex] done: {loaded} loaded, {skipped} already present, "
+          f"{failed} failed", flush=True)
     return loaded
 
 

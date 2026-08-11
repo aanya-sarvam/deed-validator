@@ -380,6 +380,13 @@
           <option value="0">No API mismatch</option>
         </select>
       </div>
+      <div class="grp">Batch
+        <select id="f_source" onchange="runSearch(1)">
+          <option value="">All</option>
+          <option value="vertex">Mismatch batch</option>
+          <option value="classification">Existing corpus</option>
+        </select>
+      </div>
       <div class="grp">Per page
         <select id="per_page" onchange="runSearch(1)">
           <option>10</option><option>25</option><option>50</option>
@@ -692,6 +699,7 @@ async function runSearch(page) {
     status: $('f_status').value,
     book: ($('f_book') ? $('f_book').value : ''),
     mismatches: ($('f_mismatch') ? $('f_mismatch').value : ''),
+    source: ($('f_source') ? $('f_source').value : ''),
     page: PAGE, per_page: $('per_page').value });
   const d = await api('/search?' + p);
 
