@@ -113,6 +113,40 @@ def _merge_enabled():
 BOOK1_CATEGORY_KEYWORDS = {"sale"}
 
 
+def _is_general_poa(book_label, deed_type=None):
+    """True for a *General* Power of Attorney deed (not Special POA). Matches
+    a value that mentions both 'power of attorney' and 'general', so ordering
+    variants ('General Power of Attorney', 'Power of Attorney - General') all
+    match while 'Special Power of Attorney' does not."""
+    for value in (book_label, deed_type):
+        if not value:
+            continue
+        norm = str(value).lower()
+        if "power of attorney" in norm and "general" in norm:
+            return True
+    return False
+
+
+def _has_property(g):
+    """Whether a grounding record has any Property data (a property_details
+    or property_boundary field)."""
+    for f in g.get("fields", []) or []:
+        if str(f.get("id") or "").startswith("property"):
+            return True
+    return False
+
+
+def _needs_consideration(g):
+    """A Consideration Amount box (defaulted to 0) is shown for:
+      - sale / immovable deeds (Book 1), always; and
+      - General POA deeds that have NO property section.
+    Special POA and property-bearing General POA are excluded."""
+    book_label, deed_type = g.get("book_label"), g.get("deed_type")
+    if _is_book1(book_label, deed_type):
+        return True
+    return _is_general_poa(book_label, deed_type) and not _has_property(g)
+
+
 def _is_book1(book_label, deed_type=None):
     """Match Book 1 deeds by checking book_label and deed_type for any
     confirmed Book 1 category keyword (see BOOK1_CATEGORY_KEYWORDS).
@@ -149,7 +183,7 @@ def _ensure_consideration_amount(rows, g):
     section name changes while walking fields in position order; and even
     appending at the end of just the Deed details block still didn't match
     where this field naturally belongs relative to its neighbors."""
-    if not _is_book1(g.get("book_label"), g.get("deed_type")):
+    if not _needs_consideration(g):
         return rows
     if any("consideration" in (r.get("label") or "").lower() for r in rows):
         return rows
@@ -789,15 +823,31 @@ def backfill_book1_consideration(con):
     distinction matters — an unfiltered full-table pull on every startup
     was a real cause of repeat OOM restarts previously).
     Returns number of documents backfilled."""
-    conditions = []
-    params = []
+    # Eligibility mirrors _needs_consideration():
+    #   sale (Book 1)  OR  (General POA AND the deed has no Property section).
+    sale_conditions = []
+    sale_params = []
     for kw in BOOK1_CATEGORY_KEYWORDS:
-        conditions.append(
+        sale_conditions.append(
             "(lower(COALESCE(d.src_meta->>'book_label','')) LIKE %s "
             "OR lower(COALESCE(d.deed_type,'')) LIKE %s)")
-        params.extend([f"%{kw}%", f"%{kw}%"])
-    where_book1 = " OR ".join(conditions)
-    params = ["%presentation%"] + params + ["%consideration%"]
+        sale_params.extend([f"%{kw}%", f"%{kw}%"])
+    where_sale = "(" + " OR ".join(sale_conditions) + ")"
+
+    # General POA: mentions both 'power of attorney' and 'general' in the same
+    # field (book_label or deed_type).
+    where_gpoa = (
+        "(((lower(COALESCE(d.src_meta->>'book_label','')) LIKE '%%power of attorney%%' "
+        "   AND lower(COALESCE(d.src_meta->>'book_label','')) LIKE '%%general%%') "
+        "  OR (lower(COALESCE(d.deed_type,'')) LIKE '%%power of attorney%%' "
+        "   AND lower(COALESCE(d.deed_type,'')) LIKE '%%general%%')) "
+        " AND NOT EXISTS ("
+        "   SELECT 1 FROM fields fp WHERE fp.document_id = d.id "
+        "   AND (fp.src_block->>'id' IN ('property_details','property_boundary') "
+        "        OR fp.section ILIKE 'propert%%')))")
+
+    where_eligible = f"({where_sale} OR {where_gpoa})"
+    params = ["%presentation%"] + sale_params + ["%consideration%"]
     rows = con.execute(
         "SELECT d.id, "
         "  COALESCE("
@@ -807,7 +857,7 @@ def backfill_book1_consideration(con):
         "     WHERE f2.document_id = d.id AND f2.section = 'Deed details')"
         "  ) AS insert_pos "
         "FROM documents d "
-        f"WHERE ({where_book1}) "
+        f"WHERE {where_eligible} "
         "AND NOT EXISTS ("
         "  SELECT 1 FROM fields f WHERE f.document_id = d.id "
         "  AND lower(f.label) LIKE %s"
