@@ -718,6 +718,7 @@ def merge_existing_party_fields(con):
         "AND src_block->>'id' IN ('seller_details','buyer_details','property_details') "
         "AND COALESCE((src_block->>'item_index')::int, 0) > 0 "
         "AND NOT (src_block ? 'group') "
+        "AND NOT (src_block ? 'per_item') "
         "ORDER BY document_id, position").fetchall()
     if not rows:
         return 0
@@ -839,7 +840,67 @@ def backfill_book1_consideration(con):
     return len(rows)
 
 
-def reposition_consideration_amount(con):
+def migrate_boundaries_into_property(con):
+    """Move legacy section-level plot boundaries (fields with
+    src_block.id='property_boundary', one set per deed) into the Property
+    group as per-property boundary attributes (boundary_north/south/east/west
+    on item 1), so boundaries render inside each Property card under a
+    'Boundaries' heading instead of as a separate block.
+
+    SQL-filtered so it's a no-op once done (returns instantly on later boots).
+    Non-directional/blank leftovers are dropped. Returns fields migrated."""
+    rows = con.execute(
+        "SELECT id, document_id, section, label, ocr_value, current_value, "
+        "odia_value, position, src_block FROM fields "
+        "WHERE src_block->>'id' = 'property_boundary'").fetchall()
+    if not rows:
+        return 0
+    migrated = 0
+    for r in rows:
+        sb = r["src_block"]
+        if isinstance(sb, str):
+            sb = json.loads(sb)
+        d = (sb.get("boundary") or "").lower()
+        if d not in ("north", "south", "east", "west"):
+            con.execute("UPDATE edit_log SET field_id=NULL WHERE field_id=%s", (r["id"],))
+            con.execute("DELETE FROM fields WHERE id=%s", (r["id"],))
+            continue
+        attr = "boundary_" + d
+        # already have a group boundary attr for this doc? then just drop legacy.
+        ex = con.execute(
+            "SELECT id FROM fields WHERE document_id=%s "
+            "AND src_block->>'id'='property_details' AND src_block->>'attr'=%s "
+            "AND (src_block ? 'group') LIMIT 1", (r["document_id"], attr)).fetchone()
+        if ex:
+            con.execute("UPDATE edit_log SET field_id=%s WHERE field_id=%s", (ex["id"], r["id"]))
+            con.execute("DELETE FROM fields WHERE id=%s", (r["id"],))
+            continue
+        prop = con.execute(
+            "SELECT section FROM fields WHERE document_id=%s "
+            "AND src_block->>'id'='property_details' AND (src_block ? 'group') LIMIT 1",
+            (r["document_id"],)).fetchone()
+        section = prop["section"] if prop else "Property"
+        template = {"id": "property_details", "attr": attr, "item_index": 1,
+                    "field": d.title(), "english_value": r["current_value"] or "",
+                    "odia_text": r["odia_value"] or "", "found": False}
+        merged = {"group": True, "id": "property_details", "attr": attr,
+                  "items": [template]}
+        new_id = con.execute(
+            "INSERT INTO fields (document_id, section, label, ocr_value, current_value, "
+            "odia_value, multiline, position, field_kind, src_block) "
+            "VALUES (%s,%s,%s,%s,%s,%s,false,%s,'text',%s) RETURNING id",
+            (r["document_id"], section, d.title(), r["ocr_value"] or "",
+             r["current_value"] or "", r["odia_value"] or "", r["position"],
+             json.dumps(merged))).fetchone()["id"]
+        con.execute("UPDATE edit_log SET field_id=%s WHERE field_id=%s", (new_id, r["id"]))
+        con.execute("DELETE FROM fields WHERE id=%s", (r["id"],))
+        migrated += 1
+        if migrated % 200 == 0:
+            con.commit()
+            print(f"[boundary-migrate] {migrated} boundaries moved...", flush=True)
+    con.commit()
+    return migrated
+
     """One-time repositioning fix for documents already backfilled by an
     EARLIER, buggy version of backfill_book1_consideration /
     _ensure_consideration_amount, which either appended the auto-added

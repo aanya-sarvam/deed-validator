@@ -129,6 +129,10 @@ def _auto_ingest():
                     rp = reposition_consideration_amount(con)
                     if rp:
                         print(f"[startup] repositioned {rp} mis-placed Consideration Amount field(s)", flush=True)
+                    from ingest_json import migrate_boundaries_into_property
+                    mb = migrate_boundaries_into_property(con)
+                    if mb:
+                        print(f"[startup] moved {mb} plot boundaries into Property cards", flush=True)
                     _ingest_status.update(state="done", documents=n, detail="already loaded")
                     _repair_scans(con)
                     print(f"[startup] already loaded — {n} documents", flush=True)
@@ -929,11 +933,15 @@ class NewField(BaseModel):
     #              for a seller/buyer/property, lazily created the first time a
     #              reviewer types into an always-shown box the source data didn't
     #              contain. Merged group field, not user-deletable.
+    # 'party_item' -> an expert-added subfield for ONE particular party item
+    #              (e.g. a note on Property 2 only). Standalone per-item field,
+    #              deletable, carrying its item_index.
     kind: str = "custom"
     boundary: str | None = None  # 'north' | 'south' | 'east' | 'west' when kind='boundary'
-    party_id: str | None = None  # 'seller_details' | 'buyer_details' | 'property_details' when kind='party'
-    attr: str | None = None      # attribute key (e.g. 'relation_name') when kind='party'
+    party_id: str | None = None  # 'seller_details' | 'buyer_details' | 'property_details' when kind='party'/'party_item'
+    attr: str | None = None      # attribute key (e.g. 'relation_name') when kind='party'/'party_item'
     user_added: bool = False     # kind='party': True for an expert-added subfield (deletable)
+    item_index: int | None = None  # 1-based item this subfield belongs to (kind='party_item')
 
 
 @app.post("/api/documents/{doc_id}/fields")
@@ -973,6 +981,18 @@ def add_field(doc_id: int, body: NewField, user=Depends(current_user)):
         # the canonical always-present ones (Name/Relation/Address) are not.
         if body.user_added:
             src_block["user_added"] = True
+    elif body.kind == "party_item":
+        # A subfield attached to ONE particular party item (e.g. Property 2).
+        # Stored standalone (NOT a merged group field) with its item_index, so
+        # it renders only under that item and exports as its own grounding field.
+        pid = (body.party_id or "").strip()
+        pattr = (body.attr or "").strip() or "value"
+        idx = int(body.item_index or 1)
+        if pid not in ("seller_details", "buyer_details", "property_details"):
+            raise HTTPException(400, "Invalid party_id for a party field")
+        src_block = {"id": pid, "attr": pattr, "item_index": idx, "field": label,
+                     "english_value": "", "odia_text": "", "found": False,
+                     "notes": "added by expert", "user_added": True, "per_item": True}
     else:
         src_block = {"id": "custom", "attr": "custom", "field": label,
                      "user_added": True}
@@ -1040,7 +1060,70 @@ def delete_field(doc_id: int, field_id: int, user=Depends(current_user)):
     return {"ok": True}
 
 
-@app.get("/api/documents/{doc_id}/history")
+class PartyItemDel(BaseModel):
+    party_id: str
+    index: int   # 0-based item to remove
+
+
+@app.post("/api/documents/{doc_id}/party/delete-item")
+def delete_party_item(doc_id: int, body: PartyItemDel, user=Depends(current_user)):
+    """Remove one whole item (a person/property) from a party group, atomically:
+      - every merged attribute (Name/…/boundaries) has that item's comma-slot
+        removed and the rest rejoined;
+      - any per-item subfields on that item are deleted;
+      - per-item subfields on later items are shifted down by one.
+    Returns the refreshed doc payload so the client can re-render."""
+    pid = (body.party_id or "").strip()
+    if pid not in ("seller_details", "buyer_details", "property_details"):
+        raise HTTPException(400, "Invalid party_id")
+    idx = int(body.index)
+
+    def drop(csv, i):
+        parts = [p.strip() for p in (csv or "").split(",")]
+        if 0 <= i < len(parts):
+            parts.pop(i)
+        if not parts:
+            parts = [""]
+        return ", ".join(parts)
+
+    with connect() as con:
+        require_lock(con, doc_id, user)
+        merged = con.execute(
+            "SELECT id, current_value, odia_value, ocr_value FROM fields "
+            "WHERE document_id=%s AND src_block->>'id'=%s AND (src_block ? 'group')",
+            (doc_id, pid)).fetchall()
+        for m in merged:
+            con.execute(
+                "UPDATE fields SET current_value=%s, odia_value=%s, ocr_value=%s WHERE id=%s",
+                (drop(m["current_value"], idx), drop(m["odia_value"], idx),
+                 drop(m["ocr_value"], idx), m["id"]))
+        # per-item subfields: delete the ones on this item, shift the rest down
+        gone = con.execute(
+            "SELECT id FROM fields WHERE document_id=%s AND src_block->>'id'=%s "
+            "AND (src_block ? 'per_item') AND (src_block->>'item_index')::int = %s",
+            (doc_id, pid, idx + 1)).fetchall()
+        for g in gone:
+            con.execute("UPDATE edit_log SET field_id=NULL WHERE field_id=%s", (g["id"],))
+        con.execute(
+            "DELETE FROM fields WHERE document_id=%s AND src_block->>'id'=%s "
+            "AND (src_block ? 'per_item') AND (src_block->>'item_index')::int = %s",
+            (doc_id, pid, idx + 1))
+        con.execute(
+            "UPDATE fields SET src_block = jsonb_set(src_block, '{item_index}', "
+            "  to_jsonb(((src_block->>'item_index')::int - 1))) "
+            "WHERE document_id=%s AND src_block->>'id'=%s AND (src_block ? 'per_item') "
+            "AND (src_block->>'item_index')::int > %s",
+            (doc_id, pid, idx + 1))
+        con.execute("INSERT INTO edit_log (document_id, action, user_id) "
+                    "VALUES (%s,'delete_party_item',%s)", (doc_id, user["id"]))
+        con.execute(
+            "UPDATE documents SET status = CASE WHEN status='pending' THEN 'in_review' "
+            "ELSE status END, last_edited_by=%s, last_edited_at=now() WHERE id=%s",
+            (user["id"], doc_id))
+        con.commit()
+        out = doc_payload(con, doc_id)
+    out["editable"] = True
+    return out
 def field_history(doc_id: int, user=Depends(current_user)):
     """Every field change on this deed: field, old, new, who, when.
     Powers the admin 'who changed what' view."""

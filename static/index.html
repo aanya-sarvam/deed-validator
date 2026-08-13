@@ -1156,37 +1156,36 @@ function renderSection(pane, canonLabel, storedSection, fields, editable, mismat
   secEl.innerHTML = `<h3>${escHtml(canonLabel)}</h3>`;
   pane.appendChild(secEl);
 
-  const groupFields = [], boundaryFields = {}, rest = [];
+  const groupFields = [], perItemFields = [], legacyBoundary = [], rest = [];
   fields.forEach(f => {
     const sb = f.src_block || {};
-    if (sb.group && PARTY_NOUNS[sb.id]) groupFields.push(f);
-    else if (sb.id === 'property_boundary') boundaryFields[(sb.boundary || '').toLowerCase()] = f;
+    if (sb.per_item && PARTY_NOUNS[sb.id]) perItemFields.push(f);
+    else if (sb.group && PARTY_NOUNS[sb.id]) groupFields.push(f);
+    else if (sb.id === 'property_boundary') legacyBoundary.push(f);  // pre-migration; folded into Property
     else rest.push(f);
   });
 
-  // Sellers / Buyers always show a party group (with the canonical Name /
-  // Relation name / Address boxes), even when extraction found no party data,
-  // so a reviewer can always fill them in.
-  const partyIdForCanon = canonLabel === 'Sellers' ? 'seller_details'
-                        : canonLabel === 'Buyers'  ? 'buyer_details'  : null;
-  if (groupFields.length || partyIdForCanon)
-    renderPartyGroup(secEl, groupFields, editable, partyIdForCanon, storedSection);
+  // Sellers / Buyers / Property always show their group card (with canonical
+  // boxes — Name/Relation/Address for people, the Boundaries block for a
+  // property), even when extraction found no data, so a reviewer can fill it in.
+  const partyIdForCanon = canonLabel === 'Sellers'  ? 'seller_details'
+                        : canonLabel === 'Buyers'   ? 'buyer_details'
+                        : canonLabel === 'Property'  ? 'property_details' : null;
+  if (groupFields.length || perItemFields.length || partyIdForCanon)
+    renderPartyGroup(secEl, groupFields, editable, partyIdForCanon, storedSection, perItemFields);
   rest.forEach(f => {
     if (f.field_kind === 'table') renderTableField(secEl, f, editable);
     else renderScalarField(secEl, f, editable, mismatchMap);
   });
 
-  const isProperty = canonLabel === 'Property';
-  if (isProperty) renderBoundaries(secEl, storedSection, boundaryFields, editable);
-
-  const hasPartyGroup = groupFields.length > 0 || partyIdForCanon;
-  if (!groupFields.length && !rest.length && !isProperty && !partyIdForCanon) {
+  const hasPartyGroup = groupFields.length > 0 || perItemFields.length > 0 || partyIdForCanon;
+  if (!hasPartyGroup && !rest.length) {
     const e = document.createElement('div'); e.className = 'sec-empty';
     e.textContent = 'No data extracted — add a field below if you need one.';
     secEl.appendChild(e);
   }
-  // Party sections offer "+ Add subfield" inside the group instead; only the
-  // non-party sections (Deed details, empty Property) get the generic control.
+  // Party sections manage their own subfields inside the card; only the
+  // non-party sections (Deed details) get the generic control.
   if (editable && !hasPartyGroup) addFieldControl(secEl, storedSection);
 }
 
@@ -1253,63 +1252,6 @@ function renderScalarField(secEl, f, editable, mismatchMap) {
   }
 }
 
-/* ---- plot boundaries (Chauhaddi): four fixed boxes under Property ---- */
-const BOUNDARY_DIRS = [['north', 'North'], ['south', 'South'], ['east', 'East'], ['west', 'West']];
-function renderBoundaries(secEl, storedSection, boundaryFields, editable) {
-  const box = document.createElement('div'); box.className = 'boundaries';
-  box.innerHTML = `<div class="boundaries-title">Plot boundaries (Chauhaddi)</div>
-    <div class="boundaries-hint">North / South / East / West of the schedule property. Left empty if not applicable.</div>`;
-  secEl.appendChild(box);
-  BOUNDARY_DIRS.forEach(([dir, label]) =>
-    renderBoundaryRow(box, storedSection, dir, label, boundaryFields[dir] || null, editable));
-}
-function renderBoundaryRow(box, storedSection, dir, label, f, editable) {
-  const uid = 'b_' + dir;
-  const row = document.createElement('div'); row.className = 'frow';
-  row.innerHTML = `<div class="lblrow"><label for="f${uid}_odia">${label} (Odia)</label>
-      <button type="button" class="eye-btn" title="Show English" onclick="toggleOrig('${uid}')">👁</button></div>
-    <input id="f${uid}_odia" lang="or" ${editable ? '' : 'disabled'}>
-    <div class="eng-wrap in-eye" id="ew${uid}">
-      <label style="margin-top:6px">${label} (English)</label>
-      <input id="f${uid}" ${editable ? '' : 'disabled'}>
-    </div>`;
-  box.appendChild(row);
-  const el = row.querySelector('#f' + uid);
-  const odiaEl = row.querySelector('#f' + uid + '_odia');
-  el.value = f ? (f.current_value || '') : '';
-  odiaEl.value = f ? (f.odia_value || '') : '';
-  const state = { f };
-  if (editable) {
-    const key = 'bnd_' + dir;
-    const save = () => saveBoundary(state, storedSection, dir, label, el.value, odiaEl.value);
-    el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
-    odiaEl.addEventListener('focus', () => { ODIA_TARGET = odiaEl.id; hideKbdHint(); });
-    attachTranslit(odiaEl);
-    el.addEventListener('change', () => { cancelAutosave(key); save(); });
-    odiaEl.addEventListener('change', () => { cancelAutosave(key); save(); });
-    const onInput = () => { $('savestate').textContent = 'Editing…'; scheduleAutosave(key, save); };
-    el.addEventListener('input', onInput);
-    odiaEl.addEventListener('input', onInput);
-  }
-}
-async function saveBoundary(state, storedSection, dir, label, value, odia) {
-  dirty++; $('savestate').textContent = 'Saving…';
-  try {
-    if (!state.f) {
-      if (!value && !odia) { $('savestate').textContent = 'All changes saved'; return; }
-      const r = await api(`/documents/${DOC.document.id}/fields`, { method: 'POST',
-        body: JSON.stringify({ section: storedSection, label: 'Boundary — ' + label,
-          value, odia, kind: 'boundary', boundary: dir }) });
-      state.f = r.field; DOC.fields.push(r.field);
-    } else {
-      await api(`/documents/${DOC.document.id}/fields/${state.f.id}`, { method: 'PATCH',
-        body: JSON.stringify({ value, odia }) });
-      state.f.current_value = value; state.f.odia_value = odia;
-    }
-    $('savestate').textContent = 'All changes saved';
-  } catch (e) { $('savestate').textContent = 'Save failed: ' + e.message; }
-  finally { dirty--; }
-}
 
 /* ---- add / delete a custom subfield ---- */
 function addFieldControl(secEl, storedSection) {
@@ -1537,141 +1479,174 @@ const CANON_PARTY_ATTRS = {
 function splitCsv(s) { return (s || '').split(',').map(x => x.trim()); }
 function escapeAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
 
-function renderPartyGroup(secEl, fields, editable, partyId, storedSection) {
+// Boundaries shown per Property (one set per plot), under a "Boundaries" heading.
+const PROPERTY_BOUNDARIES = [['boundary_north', 'North'], ['boundary_south', 'South'],
+                             ['boundary_east', 'East'], ['boundary_west', 'West']];
+
+function renderPartyGroup(secEl, fields, editable, partyId, storedSection, perItemFields) {
   const pid = partyId || (fields[0] && (fields[0].src_block || {}).id);
   const noun = PARTY_NOUNS[pid] || 'Item';
   storedSection = storedSection || (fields[0] && fields[0].section) || noun;
+  const isProperty = pid === 'property_details';
+  perItemFields = perItemFields || [];
 
-  // Build one {f, attr, label, eng[], odia[]} entry per attribute, keyed by the
-  // attribute's key (falling back to its label). f is null for a canonical
-  // subfield the source data didn't contain — it stays a blank box until the
-  // reviewer types something, at which point a backing field is created.
+  // --- merged (shared) attributes: one entry per attribute, per-item values ---
   const attrKeyOf = f => (((f.src_block || {}).attr) || (f.label || '')).toLowerCase();
+  const boundaryKeys = new Set(PROPERTY_BOUNDARIES.map(b => b[0]));
   const byKey = {};
   fields.forEach(f => {
     byKey[attrKeyOf(f)] = {
       f, attr: (f.src_block || {}).attr || attrKeyOf(f), label: f.label,
-      userAdded: !!((f.src_block || {}).user_added),
+      userAdded: !!((f.src_block || {}).user_added), isBoundary: false,
       eng: splitCsv(f.current_value), odia: splitCsv(f.odia_value),
     };
   });
 
+  // attrs[] holds ALL merged attributes (scalars first, then the 4 boundaries
+  // for a property). data-ai indexes into this single array.
   const canon = CANON_PARTY_ATTRS[pid] || [];
   const attrs = [];
   const used = new Set();
-  // canonical common subfields first, in canonical order (always shown)
   canon.forEach(([key, label]) => {
     const ex = byKey[key];
     if (ex) { attrs.push(ex); used.add(key); }
-    else attrs.push({ f: null, attr: key, label, userAdded: false, eng: [], odia: [] });
+    else attrs.push({ f: null, attr: key, label, userAdded: false, isBoundary: false, eng: [], odia: [] });
   });
-  // then any extra attributes the source data had that aren't canonical
   fields.forEach(f => {
     const k = attrKeyOf(f);
-    if (used.has(k) || canon.some(([ck]) => ck === k)) return;
-    if (!attrs.includes(byKey[k])) attrs.push(byKey[k]);
-    used.add(k);
+    if (used.has(k) || canon.some(([ck]) => ck === k) || boundaryKeys.has(k)) return;
+    attrs.push(byKey[k]); used.add(k);
   });
-  // if there's neither canonical set nor extracted data, nothing to draw
-  if (!attrs.length) return;
+  if (isProperty) {
+    PROPERTY_BOUNDARIES.forEach(([key, label]) => {
+      const ex = byKey[key];
+      if (ex) { ex.label = label; ex.isBoundary = true; ex.userAdded = false; attrs.push(ex); }
+      else attrs.push({ f: null, attr: key, label, userAdded: false, isBoundary: true, eng: [], odia: [] });
+    });
+  }
+
+  // --- per-item custom subfields (a subfield on ONE particular item) ---
+  const perItem = {};   // itemIndex(0-based) -> [ {f, attr, label, eng, odia} ]
+  perItemFields.forEach(f => {
+    const sb = f.src_block || {};
+    const i = Math.max(0, (sb.item_index || 1) - 1);
+    (perItem[i] = perItem[i] || []).push({
+      f, attr: sb.attr || attrKeyOf(f), label: f.label,
+      eng: f.current_value || '', odia: f.odia_value || '',
+    });
+  });
+
+  if (!attrs.length && !Object.keys(perItem).length && !isProperty) return;
 
   const wrap = document.createElement('div'); wrap.className = 'party-group';
   secEl.appendChild(wrap);
 
   function itemCount() {
-    return Math.max(1, ...attrs.map(a => Math.max(a.eng.length, a.odia.length)));
+    let n = 1;
+    attrs.forEach(a => { n = Math.max(n, a.eng.length, a.odia.length); });
+    Object.keys(perItem).forEach(k => { n = Math.max(n, (+k) + 1); });
+    return n;
   }
   function normalize(n) {
-    attrs.forEach(a => {
-      while (a.eng.length < n) a.eng.push('');
-      while (a.odia.length < n) a.odia.push('');
-    });
+    attrs.forEach(a => { while (a.eng.length < n) a.eng.push(''); while (a.odia.length < n) a.odia.push(''); });
+  }
+
+  function mergedBoxHtml(a, ai, i) {
+    const fid = `p_${pid}_${ai}_${i}`;
+    const delBtn = (editable && a.userAdded && !a.isBoundary && i === 0)
+      ? `<button type="button" class="field-del-btn" title="Delete this subfield" data-attr-del="${ai}">🗑</button>` : '';
+    return `<div class="party-subfield">
+      <div class="lblrow"><label for="${fid}_odia">${escHtml(a.label)} (Odia)</label>
+        <button type="button" class="eye-btn" title="Show English / original extracted values" onclick="toggleOrig('${fid}')">👁</button>${delBtn}</div>
+      <input id="${fid}_odia" data-ai="${ai}" data-item="${i}" data-kind="merged" lang="or" value="${escapeAttr(a.odia[i])}" ${editable ? '' : 'disabled'}>
+      <div class="eng-wrap in-eye" id="ew${fid}">
+        <label style="margin-top:6px">${escHtml(a.label)} (English)</label>
+        <input id="${fid}" data-ai="${ai}" data-item="${i}" data-kind="merged" value="${escapeAttr(a.eng[i])}" ${editable ? '' : 'disabled'}>
+      </div></div>`;
+  }
+  function perItemBoxHtml(entry, i, ci) {
+    const fid = `pi_${pid}_${i}_${ci}`;
+    const del = editable ? `<button type="button" class="field-del-btn" title="Delete this subfield" data-item-del="${i}" data-ci="${ci}">🗑</button>` : '';
+    return `<div class="party-subfield user-added">
+      <div class="lblrow"><label for="${fid}_odia">${escHtml(entry.label)} (Odia)</label>
+        <span class="userfield-tag">added</span>
+        <button type="button" class="eye-btn" title="Show English" onclick="toggleOrig('${fid}')">👁</button>${del}</div>
+      <input id="${fid}_odia" data-item="${i}" data-ci="${ci}" data-kind="item" lang="or" value="${escapeAttr(entry.odia)}" ${editable ? '' : 'disabled'}>
+      <div class="eng-wrap in-eye" id="ew${fid}">
+        <label style="margin-top:6px">${escHtml(entry.label)} (English)</label>
+        <input id="${fid}" data-item="${i}" data-ci="${ci}" data-kind="item" value="${escapeAttr(entry.eng)}" ${editable ? '' : 'disabled'}>
+      </div></div>`;
   }
 
   function build() {
     const n = itemCount(); normalize(n);
     wrap.innerHTML = '';
+    const scalarIdx = [], boundaryIdx = [];
+    attrs.forEach((a, idx) => { (a.isBoundary ? boundaryIdx : scalarIdx).push(idx); });
     for (let i = 0; i < n; i++) {
       const item = document.createElement('div'); item.className = 'party-item';
-      const head = document.createElement('div'); head.className = 'party-item-title-row';
-      head.innerHTML = `<div class="party-item-title">${noun} ${i + 1}</div>
-          ${editable ? `<button type="button" class="party-del-btn" data-party-del="${i}" title="Delete this ${noun.toLowerCase()}">🗑</button>` : ''}`;
-      item.appendChild(head);
-      attrs.forEach((a, ai) => {
-        const fid = `p_${pid}_${ai}_${i}`;   // DOM id only — attrs referenced by index
-        const sub = document.createElement('div'); sub.className = 'party-subfield';
-        // A 🗑 on expert-added subfields (shown once, on the first item) removes
-        // the whole subfield from every person in this group.
-        const delBtn = (editable && a.userAdded && i === 0)
-          ? `<button type="button" class="field-del-btn" title="Delete this subfield" data-attr-del="${ai}">🗑</button>` : '';
-        sub.innerHTML = `<div class="lblrow"><label for="${fid}_odia">${escHtml(a.label)} (Odia)</label>
-            <button type="button" class="eye-btn" title="Show English / original extracted values" onclick="toggleOrig('${fid}')">👁</button>${delBtn}</div>
-          <input id="${fid}_odia" data-ai="${ai}" data-party-odia="${i}" lang="or" value="${escapeAttr(a.odia[i])}" ${editable ? '' : 'disabled'}>
-          <div class="eng-wrap in-eye" id="ew${fid}">
-            <label style="margin-top:6px">${escHtml(a.label)} (English)</label>
-            <input id="${fid}" data-ai="${ai}" data-party-eng="${i}" value="${escapeAttr(a.eng[i])}" ${editable ? '' : 'disabled'}>
-          </div>`;
-        item.appendChild(sub);
-      });
+      let html = `<div class="party-item-title-row">
+          <div class="party-item-title">${noun} ${i + 1}</div>
+          ${editable ? `<button type="button" class="party-del-btn" data-party-del="${i}" title="Delete this ${noun.toLowerCase()}">🗑</button>` : ''}
+        </div>`;
+      scalarIdx.forEach(ai => { html += mergedBoxHtml(attrs[ai], ai, i); });
+      (perItem[i] || []).forEach((entry, ci) => { html += perItemBoxHtml(entry, i, ci); });
+      if (isProperty) {
+        html += `<div class="boundaries-title" style="margin-top:10px">Boundaries</div>
+          <div class="boundaries-hint">North / South / East / West of this plot. Leave empty if not applicable.</div>`;
+        boundaryIdx.forEach(ai => { html += mergedBoxHtml(attrs[ai], ai, i); });
+      }
+      if (editable) {
+        html += `<button type="button" class="small addfield-btn" data-item-add="${i}"
+          style="margin-top:8px">+ Add subfield to this ${noun.toLowerCase()}</button>`;
+      }
+      item.innerHTML = html;
       wrap.appendChild(item);
     }
-    if (editable) {
-      wrap.querySelectorAll('[data-attr-del]').forEach(el => {
-        el.addEventListener('click', () => deleteAttr(attrs[+el.dataset.attrDel]));
-      });
-      wrap.querySelectorAll('[data-party-del]').forEach(el => {
-        el.addEventListener('click', () => deleteItem(+el.dataset.partyDel));
-      });
-      wrap.querySelectorAll('[data-party-odia]').forEach(el => {
-        attachTranslit(el);
-        el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
-        el.addEventListener('input', () => {
-          const a = attrs[+el.dataset.ai];
-          a.odia[+el.dataset.partyOdia] = el.value;
-          $('savestate').textContent = 'Editing…';
-          scheduleAutosave('p_' + pid + '_' + el.dataset.ai, () => savePartyField(a));
-        });
-        el.addEventListener('change', () => { const a = attrs[+el.dataset.ai];
-          cancelAutosave('p_' + pid + '_' + el.dataset.ai); savePartyField(a); });
-      });
-      wrap.querySelectorAll('[data-party-eng]').forEach(el => {
-        el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
-        el.addEventListener('input', () => {
-          const a = attrs[+el.dataset.ai];
-          a.eng[+el.dataset.partyEng] = el.value;
-          $('savestate').textContent = 'Editing…';
-          scheduleAutosave('p_' + pid + '_' + el.dataset.ai, () => savePartyField(a));
-        });
-        el.addEventListener('change', () => { const a = attrs[+el.dataset.ai];
-          cancelAutosave('p_' + pid + '_' + el.dataset.ai); savePartyField(a); });
-      });
-    }
+    if (editable) wireEvents();
   }
 
-  // Delete removes item i from every attribute at once, since it's one
-  // person/property being removed, not just one of their fields.
-  function deleteItem(i) {
-    const n = itemCount(); normalize(n);
-    attrs.forEach(a => {
-      if (a.eng.length <= 1 && a.odia.length <= 1) {
-        a.eng[0] = ''; a.odia[0] = '';           // last one left — clear instead of removing
-      } else {
-        a.eng.splice(i, 1); a.odia.splice(i, 1);
-      }
+  function wireEvents() {
+    wrap.querySelectorAll('[data-attr-del]').forEach(el =>
+      el.addEventListener('click', () => deleteAttr(attrs[+el.dataset.attrDel])));
+    wrap.querySelectorAll('[data-party-del]').forEach(el =>
+      el.addEventListener('click', () => deleteItem(+el.dataset.partyDel)));
+    wrap.querySelectorAll('[data-item-add]').forEach(el =>
+      el.addEventListener('click', () => openPerItemModal(+el.dataset.itemAdd)));
+    wrap.querySelectorAll('[data-item-del]').forEach(el =>
+      el.addEventListener('click', () => deletePerItem(+el.dataset.itemDel, +el.dataset.ci)));
+    wrap.querySelectorAll('input[data-kind]').forEach(el => {
+      const isOdia = el.getAttribute('lang') === 'or';
+      if (isOdia) attachTranslit(el);
+      el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
+      const onEdit = (immediate) => {
+        if (el.dataset.kind === 'merged') {
+          const ai = +el.dataset.ai, i = +el.dataset.item, a = attrs[ai];
+          if (isOdia) a.odia[i] = el.value; else a.eng[i] = el.value;
+          const key = 'm_' + pid + '_' + ai;
+          if (immediate) { cancelAutosave(key); saveMergedAttr(a); }
+          else { $('savestate').textContent = 'Editing…'; scheduleAutosave(key, () => saveMergedAttr(a)); }
+        } else {
+          const i = +el.dataset.item, ci = +el.dataset.ci, entry = (perItem[i] || [])[ci];
+          if (!entry) return;
+          if (isOdia) entry.odia = el.value; else entry.eng = el.value;
+          const key = 'pi_' + pid + '_' + i + '_' + ci;
+          if (immediate) { cancelAutosave(key); savePerItem(entry, i); }
+          else { $('savestate').textContent = 'Editing…'; scheduleAutosave(key, () => savePerItem(entry, i)); }
+        }
+      };
+      el.addEventListener('input', () => onEdit(false));
+      el.addEventListener('change', () => onEdit(true));
     });
-    build();
-    attrs.forEach(savePartyField);
   }
 
-  async function savePartyField(a) {
+  async function saveMergedAttr(a) {
     const value = a.eng.join(', '), odia = a.odia.join(', ');
     const hasContent = a.eng.some(x => (x || '').trim()) || a.odia.some(x => (x || '').trim());
-    // A canonical box no one has filled in yet: don't create an empty field.
     if (!a.f && !hasContent) { $('savestate').textContent = 'All changes saved'; return; }
     dirty++; $('savestate').textContent = 'Saving…';
     try {
       if (!a.f) {
-        // First edit of an always-shown subfield the source lacked — create it.
         const r = await api(`/documents/${DOC.document.id}/fields`, { method: 'POST',
           body: JSON.stringify({ section: storedSection, label: a.label, value, odia,
             kind: 'party', party_id: pid, attr: a.attr, user_added: !!a.userAdded }) });
@@ -1686,7 +1661,28 @@ function renderPartyGroup(secEl, fields, editable, partyId, storedSection) {
     finally { dirty--; }
   }
 
-  // Remove an expert-added subfield from every person in this group.
+  async function savePerItem(entry, i) {
+    const value = entry.eng, odia = entry.odia;
+    const hasContent = (value || '').trim() || (odia || '').trim();
+    if (!entry.f && !hasContent) { $('savestate').textContent = 'All changes saved'; return; }
+    dirty++; $('savestate').textContent = 'Saving…';
+    try {
+      if (!entry.f) {
+        const r = await api(`/documents/${DOC.document.id}/fields`, { method: 'POST',
+          body: JSON.stringify({ section: storedSection, label: entry.label, value, odia,
+            kind: 'party_item', party_id: pid, attr: entry.attr, item_index: i + 1 }) });
+        entry.f = r.field; DOC.fields.push(r.field);
+      } else {
+        await api(`/documents/${DOC.document.id}/fields/${entry.f.id}`,
+          { method: 'PATCH', body: JSON.stringify({ value, odia }) });
+        entry.f.current_value = value; entry.f.odia_value = odia;
+      }
+      $('savestate').textContent = 'All changes saved';
+    } catch (e) { $('savestate').textContent = 'Save failed: ' + e.message; }
+    finally { dirty--; }
+  }
+
+  // Delete a shared subfield (an expert-added merged attribute) from everyone.
   async function deleteAttr(a) {
     if (!confirm(`Delete the “${a.label}” subfield for every ${noun.toLowerCase()} here?`)) return;
     dirty++; $('savestate').textContent = 'Deleting…';
@@ -1702,8 +1698,47 @@ function renderPartyGroup(secEl, fields, editable, partyId, storedSection) {
     finally { dirty--; }
   }
 
-  // Add a new named subfield that applies to every person in this group (one
-  // box per person). Mirrors "+ Add buyer" but adds an attribute, not an item.
+  // Delete a per-item subfield (belongs to one particular item).
+  async function deletePerItem(i, ci) {
+    const entry = (perItem[i] || [])[ci]; if (!entry) return;
+    if (!confirm(`Delete the “${entry.label}” subfield?`)) return;
+    dirty++; $('savestate').textContent = 'Deleting…';
+    try {
+      if (entry.f) {
+        await api(`/documents/${DOC.document.id}/fields/${entry.f.id}`, { method: 'DELETE' });
+        DOC.fields = DOC.fields.filter(x => x.id !== entry.f.id);
+      }
+      perItem[i].splice(ci, 1);
+      build();
+      $('savestate').textContent = 'All changes saved';
+    } catch (e) { $('savestate').textContent = 'Delete failed: ' + e.message; alert(e.message); }
+    finally { dirty--; }
+  }
+
+  // Remove one whole item (person/property). For property this also handles
+  // its per-item subfields and boundaries atomically on the server.
+  async function deleteItem(i) {
+    if (!confirm(`Delete ${noun} ${i + 1}? This removes all its fields.`)) return;
+    if (isProperty) {
+      dirty++; $('savestate').textContent = 'Saving…';
+      try {
+        const d = await api(`/documents/${DOC.document.id}/party/delete-item`,
+          { method: 'POST', body: JSON.stringify({ party_id: pid, index: i }) });
+        DOC = d; $('savestate').textContent = 'All changes saved';
+        renderDoc(DOC);
+      } catch (e) { $('savestate').textContent = 'Delete failed: ' + e.message; alert(e.message); dirty--; return; }
+      dirty--; return;
+    }
+    const n = itemCount(); normalize(n);
+    attrs.forEach(a => {
+      if (a.eng.length <= 1 && a.odia.length <= 1) { a.eng[0] = ''; a.odia[0] = ''; }
+      else { a.eng.splice(i, 1); a.odia.splice(i, 1); }
+    });
+    build();
+    attrs.forEach(saveMergedAttr);
+  }
+
+  // Add a shared subfield to EVERY item (sellers/buyers). One box per person.
   function openPartySubfieldModal() {
     $('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()">
       <div class="modal" style="width:min(440px,92vw)">
@@ -1723,13 +1758,38 @@ function renderPartyGroup(secEl, fields, editable, partyId, storedSection) {
       let base = label.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '') || 'field';
       const existing = new Set(attrs.map(a => a.attr));
       let key = base, k = 2; while (existing.has(key)) key = base + '_' + (k++);
-      const n = itemCount();
-      attrs.push({ f: null, attr: key, label, userAdded: true,
-                   eng: new Array(n).fill(''), odia: new Array(n).fill('') });
+      attrs.push({ f: null, attr: key, label, userAdded: true, isBoundary: false, eng: [], odia: [] });
       closeModal(); build();
       setTimeout(() => { const el = $(`p_${pid}_${attrs.length - 1}_0`); if (el) el.focus(); }, 30);
     };
     setTimeout(() => { const l = $('psf_label'); if (l) l.focus(); }, 30);
+  }
+
+  // Add a subfield to ONE particular item (property).
+  function openPerItemModal(i) {
+    $('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="width:min(440px,92vw)">
+        <h2>Add a subfield to ${escHtml(noun)} ${i + 1}</h2>
+        <label for="pif_label">Subfield name (title)</label>
+        <input id="pif_label" placeholder="e.g. Boundary note, Old plot no, Remarks">
+        <div class="err" id="pif_err"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+          <button id="pif_cancel">Cancel</button>
+          <button class="primary" id="pif_add">Add subfield</button>
+        </div>
+      </div></div>`;
+    $('pif_cancel').onclick = closeModal;
+    $('pif_add').onclick = () => {
+      const label = ($('pif_label').value || '').trim();
+      if (!label) { $('pif_err').textContent = 'Please enter a subfield name.'; return; }
+      let base = label.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '') || 'field';
+      const existing = new Set((perItem[i] || []).map(e => e.attr));
+      let key = base, k = 2; while (existing.has(key)) key = base + '_' + (k++);
+      (perItem[i] = perItem[i] || []).push({ f: null, attr: key, label, eng: '', odia: '' });
+      closeModal(); build();
+      setTimeout(() => { const el = $(`pi_${pid}_${i}_${perItem[i].length - 1}`); if (el) el.focus(); }, 30);
+    };
+    setTimeout(() => { const l = $('pif_label'); if (l) l.focus(); }, 30);
   }
 
   build();
@@ -1737,17 +1797,19 @@ function renderPartyGroup(secEl, fields, editable, partyId, storedSection) {
     const addBtn = document.createElement('button');
     addBtn.type = 'button'; addBtn.className = 'small party-add-btn';
     addBtn.textContent = `+ Add ${noun.toLowerCase()}`;
-    // Adding one item pushes a blank slot onto EVERY attribute (Name, Relation
-    // name, Address, ...) at once, so one click adds the whole new person.
     addBtn.onclick = () => { const n = itemCount(); normalize(n);
       attrs.forEach(a => { a.eng.push(''); a.odia.push(''); }); build(); };
     secEl.appendChild(addBtn);
 
-    const addSub = document.createElement('button');
-    addSub.type = 'button'; addSub.className = 'small addfield-btn';
-    addSub.textContent = '+ Add subfield';
-    addSub.onclick = openPartySubfieldModal;
-    secEl.appendChild(addSub);
+    // Sellers/buyers: a group-wide "+ Add subfield" (every person). Property
+    // adds subfields per-item instead (button inside each property card).
+    if (!isProperty) {
+      const addSub = document.createElement('button');
+      addSub.type = 'button'; addSub.className = 'small addfield-btn';
+      addSub.textContent = '+ Add subfield';
+      addSub.onclick = openPartySubfieldModal;
+      secEl.appendChild(addSub);
+    }
   }
 }
 
@@ -1979,26 +2041,20 @@ async function afterAction() {
 }
 async function doApprove() {
   if (!DOC) return;
-  // Confirm before submitting (unless the user opted out on this device).
-  if (localStorage.getItem('deed_skip_approve_confirm') === '1') { reallyApprove(); return; }
+  // Always confirm before submitting — guards against an accidental click.
   $('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()">
     <div class="modal" style="width:min(440px,92vw)">
       <h2>Approve this deed?</h2>
       <p style="color:var(--muted);font-size:0.9rem;margin-top:-4px">
         It will be marked <strong>validated</strong> and you'll move to the next deed.
         You can undo straight after if it was a mistake.</p>
-      <label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:0.85rem">
-        <input type="checkbox" id="ap_skip" style="width:auto"> Don't ask again on this device</label>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
         <button id="ap_cancel">Cancel</button>
         <button class="primary" id="ap_go">Approve &amp; next</button>
       </div>
     </div></div>`;
   $('ap_cancel').onclick = closeModal;
-  $('ap_go').onclick = () => {
-    if ($('ap_skip').checked) localStorage.setItem('deed_skip_approve_confirm', '1');
-    closeModal(); reallyApprove();
-  };
+  $('ap_go').onclick = () => { closeModal(); reallyApprove(); };
   setTimeout(() => { const g = $('ap_go'); if (g) g.focus(); }, 30);
 }
 async function reallyApprove() {
