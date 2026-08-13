@@ -156,8 +156,25 @@ def check_pw(pw: str, pw_hash: str) -> bool:
         return False
 
 
+# All deeds are Odisha (India) records reviewed by an India-based team, but
+# the Postgres server (e.g. Render's default) runs in UTC unless told
+# otherwise. Left unset, every now()/to_char()/::date in the app — "last
+# active", "last edited at", the daily validation chart, and the "validated
+# today" / monitor-sampling cutoffs — would be computed against UTC's
+# midnight and clock, silently drifting up to 5.5 hours from what the team
+# sees on their own clocks. Setting the session timezone once here, right
+# after connecting, makes every timestamp calculation in every query use
+# IST consistently instead of scattering `AT TIME ZONE` onto each query.
+DB_TIMEZONE = "Asia/Kolkata"
+
+
 def connect():
-    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    con = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    # SET TIME ZONE is a utility statement and does not accept bound
+    # parameters (Postgres rejects "$1" there) — safe to interpolate since
+    # DB_TIMEZONE is a fixed constant above, never user input.
+    con.execute(f"SET TIME ZONE '{DB_TIMEZONE}'")
+    return con
 
 
 def init_db():
