@@ -208,6 +208,29 @@
   .party-add-btn { margin-top: 8px; }
   .party-subfield { margin-top: 8px; }
   .party-subfield:first-of-type { margin-top: 6px; }
+  /* user-added subfields + per-section add control */
+  .sec-empty { font-size: 0.8rem; color: var(--muted); margin: 4px 0 2px; }
+  .addfield-btn { margin-top: 10px; }
+  .frow .field-del-btn { border: none; background: none; cursor: pointer; padding: 0 2px;
+    font-size: 0.8rem; color: var(--muted); line-height: 1; opacity: 0.6; margin-left: auto; }
+  .frow .field-del-btn:hover { opacity: 1; color: var(--bad); }
+  .frow.user-added { border-left: 2px solid var(--edited-border); padding-left: 8px; margin-left: -2px; }
+  .frow.user-added label { color: var(--ink); }
+  .userfield-tag { font-size: 0.65rem; text-transform: uppercase; letter-spacing: .4px;
+    color: var(--muted); background: #f0f2f5; border-radius: 4px; padding: 1px 5px; margin-left: 6px; }
+  /* plot boundaries panel */
+  .boundaries { border: 1px dashed var(--line); border-radius: 6px; padding: 8px 10px 10px; margin-top: 10px; }
+  .boundaries-title { font-size: 0.7667rem; font-weight: 500; color: var(--ink); margin-bottom: 2px; }
+  .boundaries-hint { font-size: 0.72rem; color: var(--muted); margin-bottom: 4px; }
+  /* undo snackbar */
+  #snackbar { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    background: var(--ink); color: #fff; border-radius: 8px; padding: 10px 14px;
+    display: none; align-items: center; gap: 14px; z-index: 60; font-size: 0.85rem;
+    box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+  #snackbar.show { display: flex; }
+  #snackbar button { background: transparent; border: 1px solid rgba(255,255,255,.4);
+    color: #fff; padding: 4px 12px; }
+  #snackbar button:hover { background: rgba(255,255,255,.12); }
   textarea { resize: vertical; min-height: 54px; }
   #pdfpane .bar { padding: 6px 14px; font-size: 0.8333rem; color: var(--muted);
                   border-bottom: 1px solid var(--line); background: var(--card);
@@ -462,6 +485,7 @@
     </div>
     <div class="vfoot" id="vfoot">
       <span id="savestate">All changes saved</span>
+      <button onclick="doSave()" id="btn-save" title="Save all edits now (edits also autosave)">Save</button>
       <button onclick="doSkip()" id="btn-skip">Skip</button>
       <button class="danger" onclick="doFlag()" id="btn-flag">Flag</button>
       <button onclick="doUnflag()" id="btn-unflag" style="display:none">Unflag</button>
@@ -515,6 +539,7 @@
 </div>
 
 <div id="modal-root"></div>
+<div id="snackbar"></div>
 
 
 
@@ -524,6 +549,25 @@ let ROLE  = localStorage.getItem('deed_role')  || '';
 let NAME  = localStorage.getItem('deed_name')  || '';
 let UID   = +(localStorage.getItem('deed_uid') || 0);
 let DOC = null, dirty = 0, PAGE = 1, QUEUE_MODE = false, REVIEW_MODE = false;
+
+/* ---------- autosave: debounce saves so work persists without waiting for
+   a blur, and survives a refresh or coming back the next day ---------- */
+const AUTOSAVE = {};
+function scheduleAutosave(key, fn) {
+  if (AUTOSAVE[key]) clearTimeout(AUTOSAVE[key].timer);
+  AUTOSAVE[key] = { fn, timer: setTimeout(() => {
+    const e = AUTOSAVE[key]; delete AUTOSAVE[key]; if (e) e.fn();
+  }, 800) };
+}
+function cancelAutosave(key) {
+  if (AUTOSAVE[key]) { clearTimeout(AUTOSAVE[key].timer); delete AUTOSAVE[key]; }
+}
+function flushAutosave() {
+  Object.keys(AUTOSAVE).forEach(k => {
+    const e = AUTOSAVE[k]; clearTimeout(e.timer); delete AUTOSAVE[k];
+    try { e.fn(); } catch (_) {}
+  });
+}
 let EXPERTS = [];  // cached for the per-row assign dropdowns
 
 const $ = id => document.getElementById(id);
@@ -1044,95 +1088,282 @@ function renderDoc(d) {
       pane.appendChild(btn);
     }
   }
-  let sec = null, secEl = null;
-  let fi = 0;
-  while (fi < d.fields.length) {
-    const f = d.fields[fi];
-    if (f.section !== sec) {
-      sec = f.section;
-      secEl = document.createElement('div'); secEl.className = 'section';
-      secEl.innerHTML = `<h3>${f.section}</h3>`;
-      pane.appendChild(secEl);
-    }
-    if (f.field_kind === 'table') {
-      renderTableField(secEl, f, editable);
-      fi++; continue;
-    }
-    const sb0 = f.src_block || {};
-    if (sb0.group === true && PARTY_NOUNS[sb0.id]) {
-      // Gather every consecutive field belonging to the same party group
-      // (e.g. Seller Name, Address, Relation name, ...) so they share one
-      // set of "Seller 1 / Seller 2" cards and a single "+ Add Seller"
-      // button, instead of one add button per attribute.
-      const groupFields = [f];
-      let fj = fi + 1;
-      while (fj < d.fields.length) {
-        const nf = d.fields[fj];
-        const nsb = nf.src_block || {};
-        if (nf.section === f.section && nsb.group === true && nsb.id === sb0.id) {
-          groupFields.push(nf); fj++;
-        } else break;
-      }
-      renderPartyGroup(secEl, groupFields, editable);
-      fi = fj; continue;
-    }
-    fi++;
-    const row = document.createElement('div'); row.className = 'frow';
-    const blockLabel = f.label;
-    const mm = mismatchForField(f, mismatchMap);
-    if (mm) row.classList.add('has-mismatch');
-    const tag = f.multiline ? 'textarea' : 'input';
-    const otag = (f.multiline || (f.odia_value || '').length > 60) ? 'textarea' : 'input';
-    row.innerHTML = `<div class="lblrow"><label for="f${f.id}_odia">${blockLabel} (Odia)</label>
-        <button type="button" class="eye-btn" title="Show English / original extracted values" onclick="toggleOrig(${f.id})">👁</button></div>
-      <${otag} id="f${f.id}_odia" data-fid-odia="${f.id}" lang="or" ${editable ? '' : 'disabled'}></${otag}>
-      <div class="eng-wrap in-eye" id="ew${f.id}">
-        <label style="margin-top:6px">${blockLabel} (English)</label>
-        <${tag} id="f${f.id}" data-fid="${f.id}" ${editable ? '' : 'disabled'}></${tag}>
-      </div>
-      <div class="ocr-orig" id="o${f.id}"></div>
-      <div class="edited-by" id="eb${f.id}"></div>`;
-    secEl.appendChild(row);
-    if (mm) {
-      const tip = document.createElement('div'); tip.className = 'api-mismatch';
-      tip.innerHTML = `<strong>API:</strong> ${escHtml(fmtMismatchVal(mm.api_value))}
-        &nbsp;·&nbsp; <strong>GCS:</strong> ${escHtml(fmtMismatchVal(mm.gcs_value))}`;
-      row.appendChild(tip);
-    }
-    const el = row.querySelector('[data-fid]');
-    el.value = f.current_value;
-    markChanged(el, f);
-    const odiaEl = row.querySelector('[data-fid-odia]');
-    odiaEl.value = f.odia_value || '';
-    // hidden originals panel (revealed by the eye icon): original extracted
-    // values + model hint (confidence / not-found note / romanization)
-    const sb = f.src_block || {};
-    const oEl = row.querySelector('.ocr-orig');
-    if (oEl) {
-      const parts = [];
-      parts.push(`Original: ${f.ocr_value || '(empty)'}`);
-      if (sb.odia_text !== undefined) parts.push(`Odia: ${sb.odia_text || '(empty)'}`);
-      let hint = '';
-      if (sb.found === false) hint = '⚠ not located by model' + (sb.notes ? ' — ' + sb.notes : '');
-      else {
-        if (sb.confidence != null) hint = `confidence ${sb.confidence}`;
-        if (sb.latin_readback) hint += (hint ? ' · ' : '') + sb.latin_readback;
-      }
-      if (hint) parts.push(hint);
-      oEl.textContent = parts.join('   ·   ');
-    }
-    if (editable) {
-      el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
-      odiaEl.addEventListener('focus', () => { ODIA_TARGET = odiaEl.id; hideKbdHint(); });
-      attachTranslit(odiaEl);
-      el.addEventListener('change', () => saveField(el, f));
-      el.addEventListener('input', () => { $('savestate').textContent = 'Editing…'; });
-      odiaEl.addEventListener('change', () => saveField(el, f, odiaEl.value));
-      odiaEl.addEventListener('input', () => { $('savestate').textContent = 'Editing…'; });
-    }
-  }
+  renderFields(pane, d, editable, mismatchMap);
   pane.scrollTop = 0;
   if (editable) { const first = pane.querySelector('[data-fid-odia]'); if (first) first.focus(); }
+}
+
+/* ---------- field rendering: canonical sections + add/delete subfields ----------
+   The four main sections (Deed details / Sellers / Buyers / Property) are ALWAYS
+   shown, even when extraction found nothing for them. Under any section you can
+   add your own named subfields (deletable) and, in Property, fill the plot
+   boundaries. Everything autosaves. */
+const CANON_ORDER = ['Deed details', 'Sellers', 'Buyers', 'Property'];
+
+function partyIdOfSection(fields) {
+  for (const f of fields) { const sb = f.src_block || {}; if (sb.group && PARTY_NOUNS[sb.id]) return sb.id; }
+  return null;
+}
+function canonKeyForSection(name, fields) {
+  const n = (name || '').toLowerCase();
+  const pid = partyIdOfSection(fields);
+  if (pid === 'seller_details') return 'Sellers';
+  if (pid === 'buyer_details') return 'Buyers';
+  if (pid === 'property_details') return 'Property';
+  if (fields.some(f => (f.src_block || {}).id === 'property_boundary')) return 'Property';
+  if (n === 'deed details') return 'Deed details';
+  if (n.startsWith('seller')) return 'Sellers';
+  if (n.startsWith('buyer')) return 'Buyers';
+  if (n.startsWith('propert')) return 'Property';
+  return name;  // non-canonical section (e.g. an Akshar layout block) — keep as-is
+}
+
+function renderFields(pane, d, editable, mismatchMap) {
+  const order = []; const groups = {};
+  (d.fields || []).forEach(f => {
+    const s = f.section || '';
+    if (!(s in groups)) { groups[s] = []; order.push(s); }
+    groups[s].push(f);
+  });
+  const canonOf = {}; const storedForCanon = {};
+  order.forEach(s => {
+    const c = canonKeyForSection(s, groups[s]);
+    canonOf[s] = c;
+    if (CANON_ORDER.includes(c) && !(c in storedForCanon)) storedForCanon[c] = s;
+  });
+  const rendered = new Set();
+  const renderCanon = label => {
+    const stored = storedForCanon[label] || label;
+    renderSection(pane, label, stored, groups[stored] || [], editable, mismatchMap);
+    rendered.add(stored);
+  };
+  renderCanon('Deed details');
+  // any non-canonical sections, in their original order
+  order.forEach(s => {
+    if (rendered.has(s)) return;
+    const c = canonOf[s];
+    if (CANON_ORDER.includes(c)) return;  // canonical ones handled explicitly
+    renderSection(pane, s, s, groups[s], editable, mismatchMap);
+    rendered.add(s);
+  });
+  renderCanon('Sellers');
+  renderCanon('Buyers');
+  renderCanon('Property');
+}
+
+function renderSection(pane, canonLabel, storedSection, fields, editable, mismatchMap) {
+  const secEl = document.createElement('div'); secEl.className = 'section';
+  secEl.innerHTML = `<h3>${escHtml(canonLabel)}</h3>`;
+  pane.appendChild(secEl);
+
+  const groupFields = [], boundaryFields = {}, rest = [];
+  fields.forEach(f => {
+    const sb = f.src_block || {};
+    if (sb.group && PARTY_NOUNS[sb.id]) groupFields.push(f);
+    else if (sb.id === 'property_boundary') boundaryFields[(sb.boundary || '').toLowerCase()] = f;
+    else rest.push(f);
+  });
+
+  // Sellers / Buyers always show a party group (with the canonical Name /
+  // Relation name / Address boxes), even when extraction found no party data,
+  // so a reviewer can always fill them in.
+  const partyIdForCanon = canonLabel === 'Sellers' ? 'seller_details'
+                        : canonLabel === 'Buyers'  ? 'buyer_details'  : null;
+  if (groupFields.length || partyIdForCanon)
+    renderPartyGroup(secEl, groupFields, editable, partyIdForCanon, storedSection);
+  rest.forEach(f => {
+    if (f.field_kind === 'table') renderTableField(secEl, f, editable);
+    else renderScalarField(secEl, f, editable, mismatchMap);
+  });
+
+  const isProperty = canonLabel === 'Property';
+  if (isProperty) renderBoundaries(secEl, storedSection, boundaryFields, editable);
+
+  const hasPartyGroup = groupFields.length > 0 || partyIdForCanon;
+  if (!groupFields.length && !rest.length && !isProperty && !partyIdForCanon) {
+    const e = document.createElement('div'); e.className = 'sec-empty';
+    e.textContent = 'No data extracted — add a field below if you need one.';
+    secEl.appendChild(e);
+  }
+  // Party sections offer "+ Add subfield" inside the group instead; only the
+  // non-party sections (Deed details, empty Property) get the generic control.
+  if (editable && !hasPartyGroup) addFieldControl(secEl, storedSection);
+}
+
+function renderScalarField(secEl, f, editable, mismatchMap) {
+  const row = document.createElement('div'); row.className = 'frow';
+  const sb = f.src_block || {};
+  const userAdded = sb.user_added === true;
+  if (userAdded) row.classList.add('user-added');
+  const blockLabel = f.label;
+  const mm = userAdded ? null : mismatchForField(f, mismatchMap);
+  if (mm) row.classList.add('has-mismatch');
+  const tag = f.multiline ? 'textarea' : 'input';
+  const otag = (f.multiline || (f.odia_value || '').length > 60) ? 'textarea' : 'input';
+  const delBtn = (editable && userAdded)
+    ? `<button type="button" class="field-del-btn" title="Delete this field" data-del="${f.id}">🗑</button>` : '';
+  const addedTag = userAdded ? '<span class="userfield-tag">added</span>' : '';
+  row.innerHTML = `<div class="lblrow"><label for="f${f.id}_odia">${escHtml(blockLabel)} (Odia)</label>${addedTag}
+      <button type="button" class="eye-btn" title="Show English / original extracted values" onclick="toggleOrig(${f.id})">👁</button>${delBtn}</div>
+    <${otag} id="f${f.id}_odia" data-fid-odia="${f.id}" lang="or" ${editable ? '' : 'disabled'}></${otag}>
+    <div class="eng-wrap in-eye" id="ew${f.id}">
+      <label style="margin-top:6px">${escHtml(blockLabel)} (English)</label>
+      <${tag} id="f${f.id}" data-fid="${f.id}" ${editable ? '' : 'disabled'}></${tag}>
+    </div>
+    <div class="ocr-orig" id="o${f.id}"></div>
+    <div class="edited-by" id="eb${f.id}"></div>`;
+  secEl.appendChild(row);
+  if (mm) {
+    const tip = document.createElement('div'); tip.className = 'api-mismatch';
+    tip.innerHTML = `<strong>API:</strong> ${escHtml(fmtMismatchVal(mm.api_value))}
+      &nbsp;·&nbsp; <strong>GCS:</strong> ${escHtml(fmtMismatchVal(mm.gcs_value))}`;
+    row.appendChild(tip);
+  }
+  const el = row.querySelector('[data-fid]');
+  el.value = f.current_value; markChanged(el, f);
+  const odiaEl = row.querySelector('[data-fid-odia]');
+  odiaEl.value = f.odia_value || '';
+  const oEl = row.querySelector('.ocr-orig');
+  if (oEl && !userAdded) {
+    const parts = [];
+    parts.push(`Original: ${f.ocr_value || '(empty)'}`);
+    if (sb.odia_text !== undefined) parts.push(`Odia: ${sb.odia_text || '(empty)'}`);
+    let hint = '';
+    if (sb.found === false) hint = '⚠ not located by model' + (sb.notes ? ' — ' + sb.notes : '');
+    else {
+      if (sb.confidence != null) hint = `confidence ${sb.confidence}`;
+      if (sb.latin_readback) hint += (hint ? ' · ' : '') + sb.latin_readback;
+    }
+    if (hint) parts.push(hint);
+    oEl.textContent = parts.join('   ·   ');
+  }
+  if (editable) {
+    const key = 'f' + f.id;
+    el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
+    odiaEl.addEventListener('focus', () => { ODIA_TARGET = odiaEl.id; hideKbdHint(); });
+    attachTranslit(odiaEl);
+    el.addEventListener('change', () => { cancelAutosave(key); saveField(el, f, odiaEl.value); });
+    el.addEventListener('input', () => { $('savestate').textContent = 'Editing…';
+      scheduleAutosave(key, () => saveField(el, f, odiaEl.value)); });
+    odiaEl.addEventListener('change', () => { cancelAutosave(key); saveField(el, f, odiaEl.value); });
+    odiaEl.addEventListener('input', () => { $('savestate').textContent = 'Editing…';
+      scheduleAutosave(key, () => saveField(el, f, odiaEl.value)); });
+    const db = row.querySelector('[data-del]');
+    if (db) db.addEventListener('click', () => deleteCustomField(f));
+  }
+}
+
+/* ---- plot boundaries (Chauhaddi): four fixed boxes under Property ---- */
+const BOUNDARY_DIRS = [['north', 'North'], ['south', 'South'], ['east', 'East'], ['west', 'West']];
+function renderBoundaries(secEl, storedSection, boundaryFields, editable) {
+  const box = document.createElement('div'); box.className = 'boundaries';
+  box.innerHTML = `<div class="boundaries-title">Plot boundaries (Chauhaddi)</div>
+    <div class="boundaries-hint">North / South / East / West of the schedule property. Left empty if not applicable.</div>`;
+  secEl.appendChild(box);
+  BOUNDARY_DIRS.forEach(([dir, label]) =>
+    renderBoundaryRow(box, storedSection, dir, label, boundaryFields[dir] || null, editable));
+}
+function renderBoundaryRow(box, storedSection, dir, label, f, editable) {
+  const uid = 'b_' + dir;
+  const row = document.createElement('div'); row.className = 'frow';
+  row.innerHTML = `<div class="lblrow"><label for="f${uid}_odia">${label} (Odia)</label>
+      <button type="button" class="eye-btn" title="Show English" onclick="toggleOrig('${uid}')">👁</button></div>
+    <input id="f${uid}_odia" lang="or" ${editable ? '' : 'disabled'}>
+    <div class="eng-wrap in-eye" id="ew${uid}">
+      <label style="margin-top:6px">${label} (English)</label>
+      <input id="f${uid}" ${editable ? '' : 'disabled'}>
+    </div>`;
+  box.appendChild(row);
+  const el = row.querySelector('#f' + uid);
+  const odiaEl = row.querySelector('#f' + uid + '_odia');
+  el.value = f ? (f.current_value || '') : '';
+  odiaEl.value = f ? (f.odia_value || '') : '';
+  const state = { f };
+  if (editable) {
+    const key = 'bnd_' + dir;
+    const save = () => saveBoundary(state, storedSection, dir, label, el.value, odiaEl.value);
+    el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
+    odiaEl.addEventListener('focus', () => { ODIA_TARGET = odiaEl.id; hideKbdHint(); });
+    attachTranslit(odiaEl);
+    el.addEventListener('change', () => { cancelAutosave(key); save(); });
+    odiaEl.addEventListener('change', () => { cancelAutosave(key); save(); });
+    const onInput = () => { $('savestate').textContent = 'Editing…'; scheduleAutosave(key, save); };
+    el.addEventListener('input', onInput);
+    odiaEl.addEventListener('input', onInput);
+  }
+}
+async function saveBoundary(state, storedSection, dir, label, value, odia) {
+  dirty++; $('savestate').textContent = 'Saving…';
+  try {
+    if (!state.f) {
+      if (!value && !odia) { $('savestate').textContent = 'All changes saved'; return; }
+      const r = await api(`/documents/${DOC.document.id}/fields`, { method: 'POST',
+        body: JSON.stringify({ section: storedSection, label: 'Boundary — ' + label,
+          value, odia, kind: 'boundary', boundary: dir }) });
+      state.f = r.field; DOC.fields.push(r.field);
+    } else {
+      await api(`/documents/${DOC.document.id}/fields/${state.f.id}`, { method: 'PATCH',
+        body: JSON.stringify({ value, odia }) });
+      state.f.current_value = value; state.f.odia_value = odia;
+    }
+    $('savestate').textContent = 'All changes saved';
+  } catch (e) { $('savestate').textContent = 'Save failed: ' + e.message; }
+  finally { dirty--; }
+}
+
+/* ---- add / delete a custom subfield ---- */
+function addFieldControl(secEl, storedSection) {
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'small addfield-btn';
+  btn.textContent = '+ Add field';
+  btn.onclick = () => openAddFieldModal(storedSection);
+  secEl.appendChild(btn);
+}
+function openAddFieldModal(storedSection) {
+  $('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+    <div class="modal" style="width:min(460px,92vw)">
+      <h2>Add a field to “${escHtml(storedSection)}”</h2>
+      <label for="nf_label">Field name (title)</label>
+      <input id="nf_label" placeholder="e.g. Old plot no, Witness, Remarks">
+      <label for="nf_odia" style="margin-top:8px">Value (Odia) — optional</label>
+      <input id="nf_odia" lang="or">
+      <label for="nf_value" style="margin-top:8px">Value (English) — optional</label>
+      <input id="nf_value">
+      <div class="err" id="nf_err"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button id="nf_cancel">Cancel</button>
+        <button class="primary" id="nf_add">Add field</button>
+      </div>
+    </div></div>`;
+  const odiaInput = $('nf_odia'); if (odiaInput) attachTranslit(odiaInput);
+  $('nf_cancel').onclick = closeModal;
+  $('nf_add').onclick = () => confirmAddField(storedSection);
+  setTimeout(() => { const l = $('nf_label'); if (l) l.focus(); }, 30);
+}
+async function confirmAddField(storedSection) {
+  const label = ($('nf_label').value || '').trim();
+  if (!label) { $('nf_err').textContent = 'Please enter a field name.'; return; }
+  const value = ($('nf_value').value || '').trim();
+  const odia = ($('nf_odia').value || '').trim();
+  closeModal();
+  $('savestate').textContent = 'Saving…';
+  try {
+    const r = await api(`/documents/${DOC.document.id}/fields`, { method: 'POST',
+      body: JSON.stringify({ section: storedSection, label, value, odia, kind: 'custom' }) });
+    DOC.fields.push(r.field);
+    $('savestate').textContent = 'All changes saved';
+    renderDoc(DOC);
+  } catch (e) { $('savestate').textContent = 'Save failed: ' + e.message; alert(e.message); }
+}
+async function deleteCustomField(f) {
+  if (!confirm(`Delete the “${f.label}” field? This can't be undone.`)) return;
+  $('savestate').textContent = 'Deleting…';
+  try {
+    await api(`/documents/${DOC.document.id}/fields/${f.id}`, { method: 'DELETE' });
+    DOC.fields = DOC.fields.filter(x => x.id !== f.id);
+    $('savestate').textContent = 'All changes saved';
+    renderDoc(DOC);
+  } catch (e) { $('savestate').textContent = 'Delete failed: ' + e.message; alert(e.message); }
 }
 
 const MISMATCH_FIELD_TO_LABEL = {
@@ -1234,8 +1465,9 @@ function renderTableField(secEl, f, editable) {
         if (editable) {
           inp.addEventListener('focus', () => { ODIA_TARGET = inp.id; hideKbdHint(); });
           inp.addEventListener('input', () => { rows[ri][ci] = inp.value;
-            $('savestate').textContent = 'Editing…'; });
-          inp.addEventListener('change', () => saveTableField(f, rows));
+            $('savestate').textContent = 'Editing…';
+            scheduleAutosave('t' + f.id, () => saveTableField(f, rows)); });
+          inp.addEventListener('change', () => { cancelAutosave('t' + f.id); saveTableField(f, rows); });
         }
         td.appendChild(inp); tr.appendChild(td);
       });
@@ -1293,17 +1525,55 @@ function toggleOrig(fid) {
    changes how it's split apart for display and rejoined on save. */
 const PARTY_NOUNS = { seller_details: 'Seller', buyer_details: 'Buyer', property_details: 'Property' };
 
+// Common subfields that must ALWAYS be shown for each seller/buyer, even when
+// the source data only contained some of them (e.g. just Name). Missing ones
+// render as empty boxes and only create a backing field once someone types in
+// them. Order here is the order they appear in the party card.
+const CANON_PARTY_ATTRS = {
+  seller_details: [['name', 'Name'], ['relation_name', 'Relation name'], ['address', 'Address']],
+  buyer_details:  [['name', 'Name'], ['relation_name', 'Relation name'], ['address', 'Address']],
+};
+
 function splitCsv(s) { return (s || '').split(',').map(x => x.trim()); }
 function escapeAttr(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
 
-function renderPartyGroup(secEl, fields, editable) {
-  const noun = PARTY_NOUNS[fields[0].src_block.id];
-  // one {f, eng[], odia[]} entry per attribute (Name, Address, ...) of this party
-  const attrs = fields.map(f => ({
-    f, eng: splitCsv(f.current_value), odia: splitCsv(f.odia_value),
-  }));
-  const byFieldId = {};
-  attrs.forEach(a => { byFieldId[a.f.id] = a; });
+function renderPartyGroup(secEl, fields, editable, partyId, storedSection) {
+  const pid = partyId || (fields[0] && (fields[0].src_block || {}).id);
+  const noun = PARTY_NOUNS[pid] || 'Item';
+  storedSection = storedSection || (fields[0] && fields[0].section) || noun;
+
+  // Build one {f, attr, label, eng[], odia[]} entry per attribute, keyed by the
+  // attribute's key (falling back to its label). f is null for a canonical
+  // subfield the source data didn't contain — it stays a blank box until the
+  // reviewer types something, at which point a backing field is created.
+  const attrKeyOf = f => (((f.src_block || {}).attr) || (f.label || '')).toLowerCase();
+  const byKey = {};
+  fields.forEach(f => {
+    byKey[attrKeyOf(f)] = {
+      f, attr: (f.src_block || {}).attr || attrKeyOf(f), label: f.label,
+      userAdded: !!((f.src_block || {}).user_added),
+      eng: splitCsv(f.current_value), odia: splitCsv(f.odia_value),
+    };
+  });
+
+  const canon = CANON_PARTY_ATTRS[pid] || [];
+  const attrs = [];
+  const used = new Set();
+  // canonical common subfields first, in canonical order (always shown)
+  canon.forEach(([key, label]) => {
+    const ex = byKey[key];
+    if (ex) { attrs.push(ex); used.add(key); }
+    else attrs.push({ f: null, attr: key, label, userAdded: false, eng: [], odia: [] });
+  });
+  // then any extra attributes the source data had that aren't canonical
+  fields.forEach(f => {
+    const k = attrKeyOf(f);
+    if (used.has(k) || canon.some(([ck]) => ck === k)) return;
+    if (!attrs.includes(byKey[k])) attrs.push(byKey[k]);
+    used.add(k);
+  });
+  // if there's neither canonical set nor extracted data, nothing to draw
+  if (!attrs.length) return;
 
   const wrap = document.createElement('div'); wrap.className = 'party-group';
   secEl.appendChild(wrap);
@@ -1311,9 +1581,15 @@ function renderPartyGroup(secEl, fields, editable) {
   function itemCount() {
     return Math.max(1, ...attrs.map(a => Math.max(a.eng.length, a.odia.length)));
   }
+  function normalize(n) {
+    attrs.forEach(a => {
+      while (a.eng.length < n) a.eng.push('');
+      while (a.odia.length < n) a.odia.push('');
+    });
+  }
 
   function build() {
-    const n = itemCount();
+    const n = itemCount(); normalize(n);
     wrap.innerHTML = '';
     for (let i = 0; i < n; i++) {
       const item = document.createElement('div'); item.className = 'party-item';
@@ -1321,22 +1597,28 @@ function renderPartyGroup(secEl, fields, editable) {
       head.innerHTML = `<div class="party-item-title">${noun} ${i + 1}</div>
           ${editable ? `<button type="button" class="party-del-btn" data-party-del="${i}" title="Delete this ${noun.toLowerCase()}">🗑</button>` : ''}`;
       item.appendChild(head);
-      attrs.forEach(a => {
-        const f = a.f;
-        const fid = `${f.id}_${i}`;
+      attrs.forEach((a, ai) => {
+        const fid = `p_${pid}_${ai}_${i}`;   // DOM id only — attrs referenced by index
         const sub = document.createElement('div'); sub.className = 'party-subfield';
-        sub.innerHTML = `<div class="lblrow"><label for="${fid}_odia">${f.label} (Odia)</label>
-            <button type="button" class="eye-btn" title="Show English / original extracted values" onclick="toggleOrig('${fid}')">👁</button></div>
-          <input id="${fid}_odia" data-field-id="${f.id}" data-party-odia="${i}" lang="or" value="${escapeAttr(a.odia[i])}" ${editable ? '' : 'disabled'}>
+        // A 🗑 on expert-added subfields (shown once, on the first item) removes
+        // the whole subfield from every person in this group.
+        const delBtn = (editable && a.userAdded && i === 0)
+          ? `<button type="button" class="field-del-btn" title="Delete this subfield" data-attr-del="${ai}">🗑</button>` : '';
+        sub.innerHTML = `<div class="lblrow"><label for="${fid}_odia">${escHtml(a.label)} (Odia)</label>
+            <button type="button" class="eye-btn" title="Show English / original extracted values" onclick="toggleOrig('${fid}')">👁</button>${delBtn}</div>
+          <input id="${fid}_odia" data-ai="${ai}" data-party-odia="${i}" lang="or" value="${escapeAttr(a.odia[i])}" ${editable ? '' : 'disabled'}>
           <div class="eng-wrap in-eye" id="ew${fid}">
-            <label style="margin-top:6px">${f.label} (English)</label>
-            <input id="${fid}" data-field-id="${f.id}" data-party-eng="${i}" value="${escapeAttr(a.eng[i])}" ${editable ? '' : 'disabled'}>
+            <label style="margin-top:6px">${escHtml(a.label)} (English)</label>
+            <input id="${fid}" data-ai="${ai}" data-party-eng="${i}" value="${escapeAttr(a.eng[i])}" ${editable ? '' : 'disabled'}>
           </div>`;
         item.appendChild(sub);
       });
       wrap.appendChild(item);
     }
     if (editable) {
+      wrap.querySelectorAll('[data-attr-del]').forEach(el => {
+        el.addEventListener('click', () => deleteAttr(attrs[+el.dataset.attrDel]));
+      });
       wrap.querySelectorAll('[data-party-del]').forEach(el => {
         el.addEventListener('click', () => deleteItem(+el.dataset.partyDel));
       });
@@ -1344,18 +1626,24 @@ function renderPartyGroup(secEl, fields, editable) {
         attachTranslit(el);
         el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
         el.addEventListener('input', () => {
-          byFieldId[el.dataset.fieldId].odia[+el.dataset.partyOdia] = el.value;
+          const a = attrs[+el.dataset.ai];
+          a.odia[+el.dataset.partyOdia] = el.value;
           $('savestate').textContent = 'Editing…';
+          scheduleAutosave('p_' + pid + '_' + el.dataset.ai, () => savePartyField(a));
         });
-        el.addEventListener('change', () => savePartyField(byFieldId[el.dataset.fieldId]));
+        el.addEventListener('change', () => { const a = attrs[+el.dataset.ai];
+          cancelAutosave('p_' + pid + '_' + el.dataset.ai); savePartyField(a); });
       });
       wrap.querySelectorAll('[data-party-eng]').forEach(el => {
         el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
         el.addEventListener('input', () => {
-          byFieldId[el.dataset.fieldId].eng[+el.dataset.partyEng] = el.value;
+          const a = attrs[+el.dataset.ai];
+          a.eng[+el.dataset.partyEng] = el.value;
           $('savestate').textContent = 'Editing…';
+          scheduleAutosave('p_' + pid + '_' + el.dataset.ai, () => savePartyField(a));
         });
-        el.addEventListener('change', () => savePartyField(byFieldId[el.dataset.fieldId]));
+        el.addEventListener('change', () => { const a = attrs[+el.dataset.ai];
+          cancelAutosave('p_' + pid + '_' + el.dataset.ai); savePartyField(a); });
       });
     }
   }
@@ -1363,6 +1651,7 @@ function renderPartyGroup(secEl, fields, editable) {
   // Delete removes item i from every attribute at once, since it's one
   // person/property being removed, not just one of their fields.
   function deleteItem(i) {
+    const n = itemCount(); normalize(n);
     attrs.forEach(a => {
       if (a.eng.length <= 1 && a.odia.length <= 1) {
         a.eng[0] = ''; a.odia[0] = '';           // last one left — clear instead of removing
@@ -1375,18 +1664,72 @@ function renderPartyGroup(secEl, fields, editable) {
   }
 
   async function savePartyField(a) {
-    const f = a.f;
     const value = a.eng.join(', '), odia = a.odia.join(', ');
+    const hasContent = a.eng.some(x => (x || '').trim()) || a.odia.some(x => (x || '').trim());
+    // A canonical box no one has filled in yet: don't create an empty field.
+    if (!a.f && !hasContent) { $('savestate').textContent = 'All changes saved'; return; }
     dirty++; $('savestate').textContent = 'Saving…';
     try {
-      await api(`/documents/${DOC.document.id}/fields/${f.id}`,
-        { method: 'PATCH', body: JSON.stringify({ value, odia }) });
-      f.current_value = value; f.odia_value = odia;
-      const eb = $('eb' + f.id);
-      if (eb) { eb.textContent = `edited by you · just now`; eb.classList.add('show'); }
+      if (!a.f) {
+        // First edit of an always-shown subfield the source lacked — create it.
+        const r = await api(`/documents/${DOC.document.id}/fields`, { method: 'POST',
+          body: JSON.stringify({ section: storedSection, label: a.label, value, odia,
+            kind: 'party', party_id: pid, attr: a.attr, user_added: !!a.userAdded }) });
+        a.f = r.field; DOC.fields.push(r.field);
+      } else {
+        await api(`/documents/${DOC.document.id}/fields/${a.f.id}`,
+          { method: 'PATCH', body: JSON.stringify({ value, odia }) });
+        a.f.current_value = value; a.f.odia_value = odia;
+      }
       $('savestate').textContent = 'All changes saved';
     } catch (e) { $('savestate').textContent = 'Save failed: ' + e.message; }
     finally { dirty--; }
+  }
+
+  // Remove an expert-added subfield from every person in this group.
+  async function deleteAttr(a) {
+    if (!confirm(`Delete the “${a.label}” subfield for every ${noun.toLowerCase()} here?`)) return;
+    dirty++; $('savestate').textContent = 'Deleting…';
+    try {
+      if (a.f) {
+        await api(`/documents/${DOC.document.id}/fields/${a.f.id}`, { method: 'DELETE' });
+        DOC.fields = DOC.fields.filter(x => x.id !== a.f.id);
+      }
+      const idx = attrs.indexOf(a); if (idx >= 0) attrs.splice(idx, 1);
+      build();
+      $('savestate').textContent = 'All changes saved';
+    } catch (e) { $('savestate').textContent = 'Delete failed: ' + e.message; alert(e.message); }
+    finally { dirty--; }
+  }
+
+  // Add a new named subfield that applies to every person in this group (one
+  // box per person). Mirrors "+ Add buyer" but adds an attribute, not an item.
+  function openPartySubfieldModal() {
+    $('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="width:min(440px,92vw)">
+        <h2>Add a subfield to every ${escHtml(noun.toLowerCase())}</h2>
+        <label for="psf_label">Subfield name (title)</label>
+        <input id="psf_label" placeholder="e.g. Aadhaar no, Share, Witness, PAN">
+        <div class="err" id="psf_err"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+          <button id="psf_cancel">Cancel</button>
+          <button class="primary" id="psf_add">Add subfield</button>
+        </div>
+      </div></div>`;
+    $('psf_cancel').onclick = closeModal;
+    $('psf_add').onclick = () => {
+      const label = ($('psf_label').value || '').trim();
+      if (!label) { $('psf_err').textContent = 'Please enter a subfield name.'; return; }
+      let base = label.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '') || 'field';
+      const existing = new Set(attrs.map(a => a.attr));
+      let key = base, k = 2; while (existing.has(key)) key = base + '_' + (k++);
+      const n = itemCount();
+      attrs.push({ f: null, attr: key, label, userAdded: true,
+                   eng: new Array(n).fill(''), odia: new Array(n).fill('') });
+      closeModal(); build();
+      setTimeout(() => { const el = $(`p_${pid}_${attrs.length - 1}_0`); if (el) el.focus(); }, 30);
+    };
+    setTimeout(() => { const l = $('psf_label'); if (l) l.focus(); }, 30);
   }
 
   build();
@@ -1394,10 +1737,17 @@ function renderPartyGroup(secEl, fields, editable) {
     const addBtn = document.createElement('button');
     addBtn.type = 'button'; addBtn.className = 'small party-add-btn';
     addBtn.textContent = `+ Add ${noun.toLowerCase()}`;
-    // Adding one item pushes a blank slot onto EVERY attribute (Name,
-    // Address, ...) at once, so one click adds the whole new person/property.
-    addBtn.onclick = () => { attrs.forEach(a => { a.eng.push(''); a.odia.push(''); }); build(); };
+    // Adding one item pushes a blank slot onto EVERY attribute (Name, Relation
+    // name, Address, ...) at once, so one click adds the whole new person.
+    addBtn.onclick = () => { const n = itemCount(); normalize(n);
+      attrs.forEach(a => { a.eng.push(''); a.odia.push(''); }); build(); };
     secEl.appendChild(addBtn);
+
+    const addSub = document.createElement('button');
+    addSub.type = 'button'; addSub.className = 'small addfield-btn';
+    addSub.textContent = '+ Add subfield';
+    addSub.onclick = openPartySubfieldModal;
+    secEl.appendChild(addSub);
   }
 }
 
@@ -1604,14 +1954,81 @@ async function saveField(el, f, odiaVal) {
 }
 async function flushPending() {
   document.activeElement && document.activeElement.blur();
+  flushAutosave();
   while (dirty > 0) await new Promise(r => setTimeout(r, 60));
+}
+// Explicit Save: commit every pending (debounced) edit right now. Edits also
+// autosave, but the button gives a clear, deliberate "it's saved" action.
+async function doSave() {
+  const btn = $('btn-save');
+  if (btn) { btn.disabled = true; }
+  $('savestate').textContent = 'Saving…';
+  try {
+    await flushPending();
+    $('savestate').textContent = 'All changes saved ✓';
+  } catch (e) {
+    $('savestate').textContent = 'Save failed: ' + e.message;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 async function afterAction() {
   // Always advance to the next item rather than returning to the list.
   if (REVIEW_MODE || ROLE === 'monitor') { startReviewQueue(); }
   else { startQueue(); }
 }
-async function doApprove() { await flushPending(); await api(`/documents/${DOC.document.id}/approve`, { method: 'POST' }); afterAction(); }
+async function doApprove() {
+  if (!DOC) return;
+  // Confirm before submitting (unless the user opted out on this device).
+  if (localStorage.getItem('deed_skip_approve_confirm') === '1') { reallyApprove(); return; }
+  $('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+    <div class="modal" style="width:min(440px,92vw)">
+      <h2>Approve this deed?</h2>
+      <p style="color:var(--muted);font-size:0.9rem;margin-top:-4px">
+        It will be marked <strong>validated</strong> and you'll move to the next deed.
+        You can undo straight after if it was a mistake.</p>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:0.85rem">
+        <input type="checkbox" id="ap_skip" style="width:auto"> Don't ask again on this device</label>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button id="ap_cancel">Cancel</button>
+        <button class="primary" id="ap_go">Approve &amp; next</button>
+      </div>
+    </div></div>`;
+  $('ap_cancel').onclick = closeModal;
+  $('ap_go').onclick = () => {
+    if ($('ap_skip').checked) localStorage.setItem('deed_skip_approve_confirm', '1');
+    closeModal(); reallyApprove();
+  };
+  setTimeout(() => { const g = $('ap_go'); if (g) g.focus(); }, 30);
+}
+async function reallyApprove() {
+  const approvedId = DOC.document.id;
+  const approvedTitle = $('deedtitle').textContent || '';
+  await flushPending();
+  try {
+    await api(`/documents/${approvedId}/approve`, { method: 'POST' });
+  } catch (e) { alert(e.message); return; }
+  showUndoSnackbar(approvedId, approvedTitle);
+  afterAction();
+}
+let UNDO_TIMER = null;
+function showUndoSnackbar(docId, title) {
+  const sb = $('snackbar');
+  const short = (title || '').replace(/^Deed\s*/, '');
+  sb.innerHTML = `<span>Approved${short ? ' — ' + escHtml(short) : ''}.</span>
+    <button id="undo-btn">Undo</button>`;
+  sb.classList.add('show');
+  $('undo-btn').onclick = async () => {
+    clearTimeout(UNDO_TIMER); sb.classList.remove('show');
+    try {
+      const d = await api(`/documents/${docId}/unvalidate`, { method: 'POST' });
+      QUEUE_MODE = false; REVIEW_MODE = false;
+      renderDoc(d);
+    } catch (e) { alert('Could not undo: ' + e.message); }
+  };
+  clearTimeout(UNDO_TIMER);
+  UNDO_TIMER = setTimeout(() => sb.classList.remove('show'), 9000);
+}
 async function doSkip() { await flushPending(); await api(`/documents/${DOC.document.id}/skip`, { method: 'POST' }); afterAction(); }
 async function doReview() {
   await flushPending();
@@ -1658,7 +2075,18 @@ document.addEventListener('keydown', e => {
   if (e.ctrlKey && e.key === 'Enter' && DOC && $('validate').style.display === 'flex' && DOC.editable) {
     e.preventDefault(); doApprove();
   }
+  // Ctrl/Cmd+S = save now (browsers would otherwise open "save page")
+  if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')
+      && DOC && DOC.editable && $('vfoot').style.display !== 'none') {
+    e.preventDefault(); doSave();
+  }
 });
+// Persist any pending (debounced) edits when the tab is hidden or the page is
+// left, so refreshing or coming back later never loses in-progress work.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushAutosave();
+});
+window.addEventListener('pagehide', flushAutosave);
 
 /* ---------- resizable panes (4) ---------- */
 (function initResize(){

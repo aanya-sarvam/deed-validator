@@ -918,6 +918,128 @@ def patch_field(doc_id: int, field_id: int, body: FieldPatch, user=Depends(curre
     return {"ok": True}
 
 
+class NewField(BaseModel):
+    section: str
+    label: str
+    value: str = ""
+    odia: str = ""
+    # 'custom'  -> user-added, deletable (shown with a 🗑 button)
+    # 'boundary'-> a standard plot-boundary box (North/South/East/West), not deletable
+    # 'party'   -> a standard party subfield (Name / Relation name / Address ...)
+    #              for a seller/buyer/property, lazily created the first time a
+    #              reviewer types into an always-shown box the source data didn't
+    #              contain. Merged group field, not user-deletable.
+    kind: str = "custom"
+    boundary: str | None = None  # 'north' | 'south' | 'east' | 'west' when kind='boundary'
+    party_id: str | None = None  # 'seller_details' | 'buyer_details' | 'property_details' when kind='party'
+    attr: str | None = None      # attribute key (e.g. 'relation_name') when kind='party'
+    user_added: bool = False     # kind='party': True for an expert-added subfield (deletable)
+
+
+@app.post("/api/documents/{doc_id}/fields")
+def add_field(doc_id: int, body: NewField, user=Depends(current_user)):
+    """Create a new subfield under a section. Two kinds:
+      - custom   : an expert-named subfield (title + value); deletable.
+      - boundary : one of the four fixed plot boundaries; standard, not deletable.
+    The row is placed at the end of its section so it renders inside that
+    section (the viewer starts a new section whenever the section name changes
+    while walking fields in position order)."""
+    label = (body.label or "").strip()
+    section = (body.section or "").strip()
+    if not label or not section:
+        raise HTTPException(400, "A section and a field name are required")
+    if body.kind == "boundary":
+        bid, attr = "property_boundary", f"boundary_{(body.boundary or '').lower()}"
+        src_block = {"id": bid, "attr": attr, "field": label,
+                     "user_added": False, "boundary": (body.boundary or "").lower()}
+    elif body.kind == "party":
+        # A standard party subfield (Name / Relation name / Address / ...) for a
+        # seller/buyer/property that the source data didn't extract. These boxes
+        # are always shown so a reviewer can fill them in; the field row only
+        # gets created here on the first non-empty edit. Stored as a merged
+        # group field (like extracted party fields) so it renders inside the
+        # party group and exports back into the same per-item grounding shape.
+        # A template item carries id/attr so _expand_group keeps them on export.
+        pid = (body.party_id or "").strip()
+        pattr = (body.attr or "").strip() or "value"
+        if pid not in ("seller_details", "buyer_details", "property_details"):
+            raise HTTPException(400, "Invalid party_id for a party field")
+        template = {"id": pid, "attr": pattr, "item_index": 1, "field": label,
+                    "english_value": "", "odia_text": "", "found": False,
+                    "notes": "added by expert"}
+        src_block = {"group": True, "id": pid, "attr": pattr,
+                     "items": [template], "auto_added": True}
+        # An expert-added party subfield (via "+ Add subfield") is deletable;
+        # the canonical always-present ones (Name/Relation/Address) are not.
+        if body.user_added:
+            src_block["user_added"] = True
+    else:
+        src_block = {"id": "custom", "attr": "custom", "field": label,
+                     "user_added": True}
+    with connect() as con:
+        require_lock(con, doc_id, user)
+        # end-of-section position: shift the tail down by one and slot in.
+        maxpos = con.execute(
+            "SELECT MAX(position) m FROM fields WHERE document_id=%s AND section=%s",
+            (doc_id, section)).fetchone()["m"]
+        if maxpos is None:
+            maxpos = con.execute(
+                "SELECT COALESCE(MAX(position), -1) m FROM fields WHERE document_id=%s",
+                (doc_id,)).fetchone()["m"]
+        else:
+            con.execute(
+                "UPDATE fields SET position = position + 1 "
+                "WHERE document_id=%s AND position > %s", (doc_id, maxpos))
+        newpos = maxpos + 1
+        multiline = len(body.value) > 60 or "\n" in (body.value or "")
+        row = con.execute(
+            "INSERT INTO fields (document_id, section, label, ocr_value, current_value, "
+            "odia_value, multiline, position, field_kind, src_block) "
+            "VALUES (%s,%s,%s,'',%s,%s,%s,%s,'text',%s) "
+            "RETURNING id, section, label, ocr_value, current_value, odia_value, "
+            "multiline, field_kind, layout_tag, src_block",
+            (doc_id, section, label, body.value, body.odia, multiline, newpos,
+             json.dumps(src_block))).fetchone()
+        con.execute(
+            "INSERT INTO edit_log (document_id, field_id, new_value, action, user_id) "
+            "VALUES (%s,%s,%s,'add_field',%s)", (doc_id, row["id"], label, user["id"]))
+        con.execute(
+            "UPDATE documents SET status = CASE WHEN status='pending' THEN 'in_review' "
+            "ELSE status END, last_edited_by=%s, last_edited_at=now() WHERE id=%s",
+            (user["id"], doc_id))
+        con.commit()
+    return {"field": dict(row)}
+
+
+@app.delete("/api/documents/{doc_id}/fields/{field_id}")
+def delete_field(doc_id: int, field_id: int, user=Depends(current_user)):
+    """Delete a subfield — but only one an expert added (src_block.user_added).
+    The fields that came from extraction can never be removed here."""
+    with connect() as con:
+        require_lock(con, doc_id, user)
+        f = con.execute("SELECT * FROM fields WHERE id=%s AND document_id=%s",
+                        (field_id, doc_id)).fetchone()
+        if not f:
+            raise HTTPException(404, "Field not found")
+        sb = f["src_block"] or {}
+        if isinstance(sb, str):
+            sb = json.loads(sb)
+        if not (isinstance(sb, dict) and sb.get("user_added")):
+            raise HTTPException(403, "Only fields you added can be deleted")
+        # keep the audit trail but drop the FK to the row we're removing
+        con.execute("UPDATE edit_log SET field_id=NULL WHERE field_id=%s", (field_id,))
+        con.execute("DELETE FROM fields WHERE id=%s", (field_id,))
+        con.execute(
+            "INSERT INTO edit_log (document_id, old_value, action, user_id) "
+            "VALUES (%s,%s,'delete_field',%s)", (doc_id, f["label"], user["id"]))
+        con.execute(
+            "UPDATE documents SET status = CASE WHEN status='pending' THEN 'in_review' "
+            "ELSE status END, last_edited_by=%s, last_edited_at=now() WHERE id=%s",
+            (user["id"], doc_id))
+        con.commit()
+    return {"ok": True}
+
+
 @app.get("/api/documents/{doc_id}/history")
 def field_history(doc_id: int, user=Depends(current_user)):
     """Every field change on this deed: field, old, new, who, when.
@@ -1062,19 +1184,26 @@ def unvalidate(doc_id: int, user=Depends(current_user)):
     assigned to them) to edit it again — e.g. accidental click or a late fix.
     Returns it to in_review, locked to them."""
     with connect() as con:
-        doc = con.execute("SELECT status, validated_by, assigned_to FROM documents "
+        doc = con.execute("SELECT status, validated_by, assigned_to, review_by FROM documents "
                           "WHERE id=%s FOR UPDATE", (doc_id,)).fetchone()
         if not doc:
             raise HTTPException(404, "Document not found")
-        if doc["status"] != "validated":
+        # Normally only a 'validated' deed can be un-validated. But approving a
+        # deed auto-samples ~1% of each day's approvals straight into monitor
+        # review — so the very deed you just approved may already be
+        # 'in_monitor_review'. The Undo button must still recover THAT deed, as
+        # long as a monitor hasn't picked it up yet.
+        sampled_undo = (doc["status"] == "in_monitor_review" and doc["review_by"] is None)
+        if doc["status"] != "validated" and not sampled_undo:
             raise HTTPException(400, "Only a validated deed can be un-validated")
-        # expert may only reopen their own validation, still assigned to them;
-        # admins can always
-        if user["role"] != "admin":
-            if doc["validated_by"] != user["id"] or doc["assigned_to"] != user["id"]:
-                raise HTTPException(403, "You can only re-open deeds you validated")
+        # expert may reopen a deed THEY validated (e.g. to undo an accidental
+        # approve or make a late fix); admins can always. Assignment is not
+        # required — validating it is enough to be allowed to take it back.
+        if user["role"] != "admin" and doc["validated_by"] != user["id"]:
+            raise HTTPException(403, "You can only re-open deeds you validated")
         con.execute(
             "UPDATE documents SET status='in_review', validated_by=NULL, validated_at=NULL, "
+            "sent_to_review_on=NULL, sent_to_review_by=NULL, sent_reason=NULL, "
             "locked_by=%s, locked_at=now() WHERE id=%s", (user["id"], doc_id))
         con.execute("INSERT INTO edit_log (document_id, action, user_id) "
                     "VALUES (%s,'unvalidate',%s)", (doc_id, user["id"]))
