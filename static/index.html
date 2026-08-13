@@ -388,7 +388,7 @@
           <option value="flagged">Flagged</option>
         </select>
       </div>
-      <div class="grp">Book
+      <div class="grp" id="book-grp">Book
         <select id="f_book" onchange="runSearch(1)">
           <option value="">Any</option>
           <option value="1">Book 1</option>
@@ -396,7 +396,7 @@
           <option value="4">Book 4</option>
         </select>
       </div>
-      <div class="grp">Batch
+      <div class="grp" id="batch-grp">Batch
         <select id="f_source" onchange="runSearch(1)">
           <option value="">All</option>
           <option value="vertex">Mismatch batch</option>
@@ -677,10 +677,26 @@ function enterApp() {
     // hide the prominent top status filter; offer a small one at the bottom
     $('status-grp-top').style.display = 'none';
     $('status-filter-bottom').style.display = 'block';
+    // Book / Batch are admin triage filters (which deed-book, which ingest
+    // batch a deed came from) — not relevant to an expert reviewing their
+    // own assigned queue, so hide them to keep the toolbar simple.
+    $('book-grp').style.display = 'none';
+    $('batch-grp').style.display = 'none';
     // default view: All (their records), priority sort brings in-progress to top
     const fs = $('f_status'); if (fs) fs.value = '';
   }
   bootFromHash();
+}
+
+// "Show other records" — reveals the expert's secondary status filter
+// (all/pending/in review/validated/flagged), collapsed by default to keep
+// the toolbar simple. Was referenced by the button's onclick but never
+// defined, so the button silently did nothing — fixed here.
+function toggleBottomFilter() {
+  const box = $('bottom-filter-opts');
+  const open = box.style.display !== 'none';
+  box.style.display = open ? 'none' : 'block';
+  $('filter-toggle').textContent = open ? 'Show other records ▾' : 'Show other records ▴';
 }
 
 function showView(name) {
@@ -697,15 +713,17 @@ function showView(name) {
   writeHash();
 }
 
-// Keep the current view + Records page (and filters) in the URL hash so a
-// browser refresh lands back exactly where you were, not on page 1. Uses
-// replaceState so it doesn't spam browser history or fire hashchange.
+// Keep the current view (including which specific deed is open) + Records
+// page/filters in the URL hash so a browser refresh lands back exactly where
+// you were — re-opening the same deed you were validating, not the dashboard.
+// Uses replaceState so it doesn't spam browser history or fire hashchange.
 const HASH_FILTERS = { q: 'f_q', status: 'f_status', book: 'f_book', source: 'f_source', per_page: 'per_page' };
 function writeHash() {
-  const view = CURRENT_VIEW === 'validate' ? 'browse' : CURRENT_VIEW;
   const params = new URLSearchParams();
-  params.set('view', view);
-  if (view === 'browse') {
+  params.set('view', CURRENT_VIEW);
+  if (CURRENT_VIEW === 'validate') {
+    if (DOC && DOC.document) params.set('doc', DOC.document.id);
+  } else if (CURRENT_VIEW === 'browse') {
     params.set('page', PAGE);
     for (const [k, id] of Object.entries(HASH_FILTERS)) {
       const el = $(id); if (el && el.value) params.set(k, el.value);
@@ -714,7 +732,7 @@ function writeHash() {
   const h = '#' + params.toString();
   if (location.hash !== h) history.replaceState(null, '', h);
 }
-function bootFromHash() {
+async function bootFromHash() {
   const params = new URLSearchParams((location.hash || '').replace(/^#/, ''));
   for (const [k, id] of Object.entries(HASH_FILTERS)) {
     const el = $(id), v = params.get(k);
@@ -722,6 +740,8 @@ function bootFromHash() {
   }
   const listViews = ['browse', 'progress', 'monitor', 'assign', 'accounts'];
   let view = params.get('view') || 'browse';
+  const docId = parseInt(params.get('doc') || '', 10);
+  if (view === 'validate' && docId) { await openDoc(docId); return; }
   const allowed = view === 'browse'
     || (ROLE === 'admin' && ['progress', 'assign', 'accounts', 'monitor'].includes(view))
     || (ROLE === 'monitor' && view === 'monitor');
@@ -901,7 +921,7 @@ async function openDoc(id) {
     // if a monitor opens a review-pool deed, treat subsequent actions as review flow
     if (ROLE === 'monitor' && d.document && d.document.status === 'in_monitor_review') REVIEW_MODE = true;
     renderDoc(d);
-  } catch (e) { alert(e.message); runSearch(PAGE); }
+  } catch (e) { showView('browse'); alert(e.message); runSearch(PAGE); }
 }
 async function viewDoc(id) {
   // read-only view: fetch the doc without claiming/locking it

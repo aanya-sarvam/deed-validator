@@ -115,14 +115,19 @@ BOOK1_CATEGORY_KEYWORDS = {"sale"}
 
 def _is_general_poa(book_label, deed_type=None):
     """True for a *General* Power of Attorney deed (not Special POA). Matches
-    a value that mentions both 'power of attorney' and 'general', so ordering
-    variants ('General Power of Attorney', 'Power of Attorney - General') all
-    match while 'Special Power of Attorney' does not."""
+    a value that mentions 'general' together with either 'power of attorney'
+    (spelled out) or the abbreviation 'poa' — real data uses both forms (e.g.
+    deed_type='GENERAL POA WITHOUT PROPERTY'). Explicitly excludes anything
+    that also says 'special', so 'Special POA' never matches even if it
+    somehow also mentioned 'general' elsewhere."""
     for value in (book_label, deed_type):
         if not value:
             continue
         norm = str(value).lower()
-        if "power of attorney" in norm and "general" in norm:
+        if "special" in norm:
+            continue
+        mentions_poa = "power of attorney" in norm or re.search(r"\bpoa\b", norm)
+        if mentions_poa and "general" in norm:
             return True
     return False
 
@@ -834,17 +839,23 @@ def backfill_book1_consideration(con):
         sale_params.extend([f"%{kw}%", f"%{kw}%"])
     where_sale = "(" + " OR ".join(sale_conditions) + ")"
 
-    # General POA: mentions both 'power of attorney' and 'general' in the same
-    # field (book_label or deed_type).
+    # General POA: mentions 'general' together with either 'power of attorney'
+    # (spelled out) or the abbreviation 'poa' (word-boundary, via ~*), and does
+    # NOT mention 'special' — mirrors _is_general_poa exactly.
+    def _gpoa_cond(col):
+        return (
+            f"(lower(COALESCE({col},'')) NOT LIKE '%%special%%' "
+            f"AND lower(COALESCE({col},'')) LIKE '%%general%%' "
+            f"AND (lower(COALESCE({col},'')) LIKE '%%power of attorney%%' "
+            f"     OR COALESCE({col},'') ~* '\\ypoa\\y'))")
+    book_col = "d.src_meta->>'book_label'"
     where_gpoa = (
-        "(((lower(COALESCE(d.src_meta->>'book_label','')) LIKE '%%power of attorney%%' "
-        "   AND lower(COALESCE(d.src_meta->>'book_label','')) LIKE '%%general%%') "
-        "  OR (lower(COALESCE(d.deed_type,'')) LIKE '%%power of attorney%%' "
-        "   AND lower(COALESCE(d.deed_type,'')) LIKE '%%general%%')) "
+        f"(({_gpoa_cond(book_col)}) "
+        f" OR ({_gpoa_cond('d.deed_type')})) "
         " AND NOT EXISTS ("
         "   SELECT 1 FROM fields fp WHERE fp.document_id = d.id "
         "   AND (fp.src_block->>'id' IN ('property_details','property_boundary') "
-        "        OR fp.section ILIKE 'propert%%')))")
+        "        OR fp.section ILIKE 'propert%%'))")
 
     where_eligible = f"({where_sale} OR {where_gpoa})"
     params = ["%presentation%"] + sale_params + ["%consideration%"]
