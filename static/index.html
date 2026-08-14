@@ -913,6 +913,31 @@ async function showHistory(docId) {
 }
 function closeModal() { $('modal-root').innerHTML = ''; }
 
+/* ---------- vertex batch: field-changes drill-down ---------- */
+let VERTEX_CHANGES = [];
+async function showVertexChangeDetail(i) {
+  const c = VERTEX_CHANGES[i];
+  if (!c) return;
+  let rows;
+  try {
+    rows = await api(`/admin/vertex-changes/detail?section=${encodeURIComponent(c.section)}`
+      + `&label=${encodeURIComponent(c.label)}&action=${encodeURIComponent(c.action)}`);
+  } catch (e) { alert(e.message); return; }
+  const body = rows.length ? rows.map(r => `<tr style="cursor:pointer" onclick="closeModal();openDoc(${r.doc_id})">
+      <td>${r.ts}</td><td class="mono">${r.deed_number}</td><td>${r.by_name}</td>
+      <td style="color:var(--muted)">${r.old_value || '(empty)'}</td>
+      <td style="color:var(--ok)">${r.new_value || '(empty)'}</td></tr>`).join('')
+    : '<tr><td colspan="5" style="color:var(--muted)">No changes recorded.</td></tr>';
+  $('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <h2>${escHtml(c.section)} · ${escHtml(c.label)}</h2>
+      <p style="color:var(--muted);font-size:0.85rem;margin-top:-8px">${escHtml(c.action_label)} — click a row to open that deed.</p>
+      <table class="stats"><thead><tr><th>When</th><th>Deed</th><th>By</th>
+        <th>From</th><th>To</th></tr></thead><tbody>${body}</tbody></table>
+      <p style="margin-top:14px"><button onclick="closeModal()">Close</button></p>
+    </div></div>`;
+}
+
 /* ---------- validate ---------- */
 async function openDoc(id) {
   QUEUE_MODE = false; REVIEW_MODE = false;
@@ -2278,9 +2303,10 @@ async function loadMonitor() {
 }
 
 async function loadProgress() {
-  const [s, mm] = await Promise.all([
+  const [s, mm, changes] = await Promise.all([
     api('/admin/dashboard'),
-    api('/admin/vertex-progress').catch(() => null)
+    api('/admin/vertex-progress').catch(() => null),
+    api('/admin/vertex-changes/summary').catch(() => null)
   ]);
   const v = k => s.by_status[k] || 0;
   const pct = s.total ? Math.round(v('validated') / s.total * 100) : 0;
@@ -2334,6 +2360,19 @@ async function loadProgress() {
       <table class="stats"><thead><tr><th>Expert</th><th>Open / assigned</th>
         <th>Validated</th><th>Corrected</th><th>Correction rate</th></tr></thead>
         <tbody>${mmRows}</tbody></table>`;
+  }
+  if (changes && changes.length) {
+    VERTEX_CHANGES = changes;
+    const changeRows = changes.map((c, i) => `<tr style="cursor:pointer" onclick="showVertexChangeDetail(${i})">
+        <td>${escHtml(c.section)}</td><td>${escHtml(c.label)}</td>
+        <td>${escHtml(c.action_label)}</td><td>${c.change_count}</td>
+        <td>${c.doc_count}</td><td>${c.last_change}</td></tr>`).join('');
+    mmBlock += `<h2>Field changes in this batch</h2>
+      <p style="color:var(--muted);font-size:0.8333rem">Every field correction, addition, or deletion made across the batch,
+        grouped by field and change type. Click a row to see the individual before/after values.</p>
+      <table class="stats"><thead><tr><th>Section</th><th>Field</th><th>Change type</th>
+        <th># changes</th><th># deeds</th><th>Last change</th></tr></thead>
+        <tbody>${changeRows}</tbody></table>`;
   }
   $('progress').innerHTML = `
     <h1>Dashboard</h1>${cards}

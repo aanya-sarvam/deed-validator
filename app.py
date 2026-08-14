@@ -1679,6 +1679,76 @@ def vertex_progress(user=Depends(require_admin)):
             "experts": experts}
 
 
+# Only these edit_log actions represent an actual change to a field's
+# content (as opposed to lifecycle actions like 'approve'/'flag'/'reopen').
+FIELD_CHANGE_ACTIONS = ("edit", "edit_odia", "add_field", "delete_field", "delete_party_item")
+ACTION_LABELS = {
+    "edit": "Corrected (English)",
+    "edit_odia": "Corrected (Odia)",
+    "add_field": "New field added",
+    "delete_field": "Field deleted",
+    "delete_party_item": "Party item removed",
+}
+# Grouping key shared by both endpoints below: section/label fall back to the
+# text carried directly on the edit_log row when the field itself has since
+# been deleted (field_id is nulled out on delete, see delete_field()), so a
+# field's change history survives even after the field row is gone.
+_SECTION_EXPR = "COALESCE(f.section, 'Party items')"
+_LABEL_EXPR = "COALESCE(f.label, e.old_value, e.new_value, 'Item removed')"
+
+
+@app.get("/api/admin/vertex-changes/summary")
+def vertex_changes_summary(user=Depends(require_admin)):
+    """Aggregates every field-level change made across the vertex batch
+    (the ~1002 newly added deeds), grouped by section + field + type of
+    change, so an admin can see WHAT kinds of fields get corrected and HOW,
+    rather than having to open deeds one at a time."""
+    with connect() as con:
+        rows = con.execute(
+            f"SELECT {_SECTION_EXPR} AS section, {_LABEL_EXPR} AS label, "
+            "e.action, COUNT(*) change_count, "
+            "COUNT(DISTINCT e.document_id) doc_count, MAX(e.ts) last_change "
+            "FROM edit_log e JOIN documents d ON d.id = e.document_id "
+            "LEFT JOIN fields f ON f.id = e.field_id "
+            "WHERE d.source = 'vertex' AND e.action = ANY(%(actions)s) "
+            "GROUP BY 1, 2, e.action ORDER BY change_count DESC",
+            {"actions": list(FIELD_CHANGE_ACTIONS)}).fetchall()
+    out = []
+    for r in rows:
+        r = dict(r)
+        r["action_label"] = ACTION_LABELS.get(r["action"], r["action"])
+        r["last_change"] = str(r["last_change"])[:19]
+        out.append(r)
+    return out
+
+
+@app.get("/api/admin/vertex-changes/detail")
+def vertex_changes_detail(section: str, label: str, action: str,
+                           user=Depends(require_admin)):
+    """Every individual change behind one summary row: which deed, old
+    value, new value, who made it, when — so an admin can drill into e.g.
+    'Buyer / Name / Corrected (English)' and see the actual edits."""
+    if action not in FIELD_CHANGE_ACTIONS:
+        raise HTTPException(400, "Unknown action")
+    with connect() as con:
+        rows = con.execute(
+            f"SELECT e.ts, e.old_value, e.new_value, u.full_name AS by_name, "
+            "d.id AS doc_id, d.deed_number "
+            "FROM edit_log e JOIN documents d ON d.id = e.document_id "
+            "JOIN users u ON u.id = e.user_id "
+            "LEFT JOIN fields f ON f.id = e.field_id "
+            f"WHERE d.source='vertex' AND e.action = %(action)s "
+            f"AND {_SECTION_EXPR} = %(section)s AND {_LABEL_EXPR} = %(label)s "
+            "ORDER BY e.ts DESC",
+            {"action": action, "section": section, "label": label}).fetchall()
+    out = []
+    for r in rows:
+        r = dict(r)
+        r["ts"] = str(r["ts"])[:19]
+        out.append(r)
+    return out
+
+
 class NewUser(BaseModel):
     username: str
     password: str
