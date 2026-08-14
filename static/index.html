@@ -1279,6 +1279,7 @@ function renderScalarField(secEl, f, editable, mismatchMap) {
   el.value = f.current_value; markChanged(el, f);
   const odiaEl = row.querySelector('[data-fid-odia]');
   odiaEl.value = f.odia_value || '';
+  markChangedOdia(odiaEl, f, sb.odia_text || '');
   const oEl = row.querySelector('.ocr-orig');
   if (oEl && !userAdded) {
     const parts = [];
@@ -1298,12 +1299,13 @@ function renderScalarField(secEl, f, editable, mismatchMap) {
     el.addEventListener('focus', () => { ODIA_TARGET = el.id; hideKbdHint(); });
     odiaEl.addEventListener('focus', () => { ODIA_TARGET = odiaEl.id; hideKbdHint(); });
     attachTranslit(odiaEl);
-    el.addEventListener('change', () => { cancelAutosave(key); saveField(el, f, odiaEl.value); });
+    const origOdia = sb.odia_text || '';
+    el.addEventListener('change', () => { cancelAutosave(key); saveField(el, f, odiaEl.value, odiaEl, origOdia); });
     el.addEventListener('input', () => { $('savestate').textContent = 'Editing…';
-      scheduleAutosave(key, () => saveField(el, f, odiaEl.value)); });
-    odiaEl.addEventListener('change', () => { cancelAutosave(key); saveField(el, f, odiaEl.value); });
+      scheduleAutosave(key, () => saveField(el, f, odiaEl.value, odiaEl, origOdia)); });
+    odiaEl.addEventListener('change', () => { cancelAutosave(key); saveField(el, f, odiaEl.value, odiaEl, origOdia); });
     odiaEl.addEventListener('input', () => { $('savestate').textContent = 'Editing…';
-      scheduleAutosave(key, () => saveField(el, f, odiaEl.value)); });
+      scheduleAutosave(key, () => saveField(el, f, odiaEl.value, odiaEl, origOdia)); });
     const db = row.querySelector('[data-del]');
     if (db) db.addEventListener('click', () => deleteCustomField(f));
   }
@@ -1509,6 +1511,12 @@ async function saveTableField(f, rows) {
 function markChanged(el, f) {
   // highlight edited fields; the original value lives behind the eye icon
   el.classList.toggle('changed', el.value !== f.ocr_value);
+}
+
+function markChangedOdia(el, f, origOdia) {
+  // same idea as markChanged(), but for the Odia box — the one actually
+  // visible by default — compared against its own original value.
+  el.classList.toggle('changed', el.value !== (origOdia || ''));
 }
 
 function toggleOrig(fid) {
@@ -2066,7 +2074,7 @@ document.addEventListener('mousedown', ev => {
 });
 window.addEventListener('resize', () => { if (TL.el) positionTranslitPop(TL.el); });
 
-async function saveField(el, f, odiaVal) {
+async function saveField(el, f, odiaVal, odiaEl, origOdia) {
   dirty++; $('savestate').textContent = 'Saving…';
   try {
     const body = { value: el.value };
@@ -2075,6 +2083,7 @@ async function saveField(el, f, odiaVal) {
       { method: 'PATCH', body: JSON.stringify(body) });
     f.current_value = el.value; markChanged(el, f);
     if (odiaVal !== undefined) f.odia_value = odiaVal;
+    if (odiaEl) markChangedOdia(odiaEl, f, origOdia);
     const eb = $('eb' + f.id);
     if (eb) { eb.textContent = `edited by you · just now`; eb.classList.add('show'); }
     $('savestate').textContent = 'All changes saved';

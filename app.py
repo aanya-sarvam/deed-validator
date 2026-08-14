@@ -1124,6 +1124,9 @@ def delete_party_item(doc_id: int, body: PartyItemDel, user=Depends(current_user
         out = doc_payload(con, doc_id)
     out["editable"] = True
     return out
+
+
+@app.get("/api/documents/{doc_id}/history")
 def field_history(doc_id: int, user=Depends(current_user)):
     """Every field change on this deed: field, old, new, who, when.
     Powers the admin 'who changed what' view."""
