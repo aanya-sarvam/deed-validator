@@ -171,7 +171,8 @@
   .section h3 { margin: 0 0 8px; font-family: Georgia, serif; font-weight: 500; font-size: 0.8667rem;
     line-height: 1; color: var(--ink); letter-spacing: .4px; text-transform: uppercase; }
   .frow { margin: 8px 0 0; }
-  .frow input.changed, .frow textarea.changed { background: var(--edited);
+  .frow input.changed, .frow textarea.changed,
+  .party-subfield input.changed, .party-subfield textarea.changed { background: var(--edited);
     border-color: var(--edited-border); box-shadow: 0 0 0 1px var(--edited-border); }
   .ocr-orig { font-size: 0.7667rem; color: var(--warn); margin-top: 2px; display: none; }
   .ocr-orig.show { display: block; }
@@ -330,7 +331,8 @@
     <nav>
       <button id="nav-browse" class="active" onclick="showView('browse')">Records</button>
       <button id="nav-progress" onclick="showView('progress')" style="display:none">Dashboard</button>
-      <button id="nav-monitor" onclick="showView('monitor')" style="display:none">Review dashboard</button>
+      <button id="nav-monitor" onclick="showView('monitor')" style="display:none">Batch dashboard</button>
+      <!-- TEMP: normally "Review dashboard" -> loadMonitor(); see loadVertexBatchDashboardTemp() -->
       <button id="nav-assign" onclick="showView('assign')" style="display:none">Assign work</button>
       <button id="nav-accounts" onclick="showView('accounts')" style="display:none">Accounts</button>
     </nav>
@@ -707,7 +709,7 @@ function showView(name) {
   $(name).style.display = name === 'validate' ? 'flex' : 'block';
   CURRENT_VIEW = name;
   if (name === 'progress') loadProgress();
-  if (name === 'monitor') loadMonitor();
+  if (name === 'monitor') loadVertexBatchDashboardTemp(); // TEMP: was loadMonitor()
   if (name === 'assign') loadAssign();
   if (name === 'accounts') loadUsers();
   writeHash();
@@ -1588,10 +1590,22 @@ function renderPartyGroup(secEl, fields, editable, partyId, storedSection, perIt
   const boundaryKeys = new Set(PROPERTY_BOUNDARIES.map(b => b[0]));
   const byKey = {};
   fields.forEach(f => {
+    const sb = f.src_block || {};
+    const items = sb.items || null;
+    // English baseline: f.ocr_value is the immutable comma-joined original
+    // (set once at ingest — see ingest_json.py), so splitting it lines up
+    // index-for-index with the current-value split below.
+    const origEng = splitCsv(f.ocr_value || '');
+    // Odia has no separate immutable column (odia_value is mutable), so the
+    // true original only survives inside src_block.items' snapshot from
+    // ingest; fall back to a single sb.odia_text for the rare non-grouped case.
+    const origOdia = items ? items.map(it => it.odia_text || '')
+      : (sb.odia_text !== undefined ? [sb.odia_text || ''] : []);
     byKey[attrKeyOf(f)] = {
       f, attr: (f.src_block || {}).attr || attrKeyOf(f), label: f.label,
       userAdded: !!((f.src_block || {}).user_added), isBoundary: false,
       eng: splitCsv(f.current_value), odia: splitCsv(f.odia_value),
+      origEng, origOdia,
     };
   });
 
@@ -1603,7 +1617,7 @@ function renderPartyGroup(secEl, fields, editable, partyId, storedSection, perIt
   canon.forEach(([key, label]) => {
     const ex = byKey[key];
     if (ex) { attrs.push(ex); used.add(key); }
-    else attrs.push({ f: null, attr: key, label, userAdded: false, isBoundary: false, eng: [], odia: [] });
+    else attrs.push({ f: null, attr: key, label, userAdded: false, isBoundary: false, eng: [], odia: [], origEng: [], origOdia: [] });
   });
   fields.forEach(f => {
     const k = attrKeyOf(f);
@@ -1614,7 +1628,7 @@ function renderPartyGroup(secEl, fields, editable, partyId, storedSection, perIt
     PROPERTY_BOUNDARIES.forEach(([key, label]) => {
       const ex = byKey[key];
       if (ex) { ex.label = label; ex.isBoundary = true; ex.userAdded = false; attrs.push(ex); }
-      else attrs.push({ f: null, attr: key, label, userAdded: false, isBoundary: true, eng: [], odia: [] });
+      else attrs.push({ f: null, attr: key, label, userAdded: false, isBoundary: true, eng: [], odia: [], origEng: [], origOdia: [] });
     });
   }
 
@@ -1641,33 +1655,44 @@ function renderPartyGroup(secEl, fields, editable, partyId, storedSection, perIt
     return n;
   }
   function normalize(n) {
-    attrs.forEach(a => { while (a.eng.length < n) a.eng.push(''); while (a.odia.length < n) a.odia.push(''); });
+    attrs.forEach(a => {
+      while (a.eng.length < n) a.eng.push('');
+      while (a.odia.length < n) a.odia.push('');
+      while (a.origEng.length < n) a.origEng.push('');
+      while (a.origOdia.length < n) a.origOdia.push('');
+    });
   }
 
   function mergedBoxHtml(a, ai, i) {
     const fid = `p_${pid}_${ai}_${i}`;
     const delBtn = (editable && a.userAdded && !a.isBoundary && i === 0)
       ? `<button type="button" class="field-del-btn" title="Delete this subfield" data-attr-del="${ai}">🗑</button>` : '';
+    const odiaChanged = (a.odia[i] || '') !== (a.origOdia[i] || '');
+    const engChanged = (a.eng[i] || '') !== (a.origEng[i] || '');
     return `<div class="party-subfield">
       <div class="lblrow"><label for="${fid}_odia">${escHtml(a.label)} (Odia)</label>
         <button type="button" class="eye-btn" title="Show English / original extracted values" onclick="toggleOrig('${fid}')">👁</button>${delBtn}</div>
-      <input id="${fid}_odia" data-ai="${ai}" data-item="${i}" data-kind="merged" lang="or" value="${escapeAttr(a.odia[i])}" ${editable ? '' : 'disabled'}>
+      <input id="${fid}_odia" data-ai="${ai}" data-item="${i}" data-kind="merged" lang="or" class="${odiaChanged ? 'changed' : ''}" value="${escapeAttr(a.odia[i])}" ${editable ? '' : 'disabled'}>
       <div class="eng-wrap in-eye" id="ew${fid}">
         <label style="margin-top:6px">${escHtml(a.label)} (English)</label>
-        <input id="${fid}" data-ai="${ai}" data-item="${i}" data-kind="merged" value="${escapeAttr(a.eng[i])}" ${editable ? '' : 'disabled'}>
+        <input id="${fid}" data-ai="${ai}" data-item="${i}" data-kind="merged" class="${engChanged ? 'changed' : ''}" value="${escapeAttr(a.eng[i])}" ${editable ? '' : 'disabled'}>
       </div></div>`;
   }
   function perItemBoxHtml(entry, i, ci) {
     const fid = `pi_${pid}_${i}_${ci}`;
     const del = editable ? `<button type="button" class="field-del-btn" title="Delete this subfield" data-item-del="${i}" data-ci="${ci}">🗑</button>` : '';
+    // Per-item subfields are always newly added (baseline is empty), so any
+    // typed content is itself a "change" worth highlighting.
+    const odiaChanged = !!(entry.odia || '').trim();
+    const engChanged = !!(entry.eng || '').trim();
     return `<div class="party-subfield user-added">
       <div class="lblrow"><label for="${fid}_odia">${escHtml(entry.label)} (Odia)</label>
         <span class="userfield-tag">added</span>
         <button type="button" class="eye-btn" title="Show English" onclick="toggleOrig('${fid}')">👁</button>${del}</div>
-      <input id="${fid}_odia" data-item="${i}" data-ci="${ci}" data-kind="item" lang="or" value="${escapeAttr(entry.odia)}" ${editable ? '' : 'disabled'}>
+      <input id="${fid}_odia" data-item="${i}" data-ci="${ci}" data-kind="item" lang="or" class="${odiaChanged ? 'changed' : ''}" value="${escapeAttr(entry.odia)}" ${editable ? '' : 'disabled'}>
       <div class="eng-wrap in-eye" id="ew${fid}">
         <label style="margin-top:6px">${escHtml(entry.label)} (English)</label>
-        <input id="${fid}" data-item="${i}" data-ci="${ci}" data-kind="item" value="${escapeAttr(entry.eng)}" ${editable ? '' : 'disabled'}>
+        <input id="${fid}" data-item="${i}" data-ci="${ci}" data-kind="item" class="${engChanged ? 'changed' : ''}" value="${escapeAttr(entry.eng)}" ${editable ? '' : 'disabled'}>
       </div></div>`;
   }
 
@@ -1725,6 +1750,7 @@ function renderPartyGroup(secEl, fields, editable, partyId, storedSection, perIt
         if (el.dataset.kind === 'merged') {
           const ai = +el.dataset.ai, i = +el.dataset.item, a = attrs[ai];
           if (isOdia) a.odia[i] = el.value; else a.eng[i] = el.value;
+          el.classList.toggle('changed', el.value !== (isOdia ? (a.origOdia[i] || '') : (a.origEng[i] || '')));
           const key = 'm_' + pid + '_' + ai;
           if (immediate) { cancelAutosave(key); saveMergedAttr(a); }
           else { $('savestate').textContent = 'Editing…'; scheduleAutosave(key, () => saveMergedAttr(a)); }
@@ -1732,6 +1758,7 @@ function renderPartyGroup(secEl, fields, editable, partyId, storedSection, perIt
           const i = +el.dataset.item, ci = +el.dataset.ci, entry = (perItem[i] || [])[ci];
           if (!entry) return;
           if (isOdia) entry.odia = el.value; else entry.eng = el.value;
+          el.classList.toggle('changed', !!el.value.trim());
           const key = 'pi_' + pid + '_' + i + '_' + ci;
           if (immediate) { cancelAutosave(key); savePerItem(entry, i); }
           else { $('savestate').textContent = 'Editing…'; scheduleAutosave(key, () => savePerItem(entry, i)); }
@@ -1860,7 +1887,7 @@ function renderPartyGroup(secEl, fields, editable, partyId, storedSection, perIt
       let base = label.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '') || 'field';
       const existing = new Set(attrs.map(a => a.attr));
       let key = base, k = 2; while (existing.has(key)) key = base + '_' + (k++);
-      attrs.push({ f: null, attr: key, label, userAdded: true, isBoundary: false, eng: [], odia: [] });
+      attrs.push({ f: null, attr: key, label, userAdded: true, isBoundary: false, eng: [], odia: [], origEng: [], origOdia: [] });
       closeModal(); build();
       setTimeout(() => { const el = $(`p_${pid}_${attrs.length - 1}_0`); if (el) el.focus(); }, 30);
     };
@@ -2303,11 +2330,7 @@ async function loadMonitor() {
 }
 
 async function loadProgress() {
-  const [s, mm, changes] = await Promise.all([
-    api('/admin/dashboard'),
-    api('/admin/vertex-progress').catch(() => null),
-    api('/admin/vertex-changes/summary').catch(() => null)
-  ]);
+  const s = await api('/admin/dashboard');
   const v = k => s.by_status[k] || 0;
   const pct = s.total ? Math.round(v('validated') / s.total * 100) : 0;
   const cards = `<div class="cards">
@@ -2337,8 +2360,36 @@ async function loadProgress() {
     `<tr><td class="mono">${f.deed_number}</td><td>${f.flag_reason || '—'}</td><td>${f.flagged_by || '—'}</td></tr>`).join('')
     || '<tr><td colspan="3">None</td></tr>';
 
-  // ----- Mismatch batch (newly added vertex deeds) -----
-  let mmBlock = '';
+  $('progress').innerHTML = `
+    <h1>Dashboard</h1>${cards}
+    <h2>Experts</h2>
+    <table class="stats"><thead><tr><th>Expert</th><th>Assigned (open / total)</th>
+      <th>Validated</th><th>Today</th><th>Last 7 days</th><th>Corrections</th>
+      <th>Flags</th><th>Last active</th></tr></thead><tbody>${expertRows}</tbody></table>
+    <h2>Progress by book</h2>
+    <table class="stats"><thead><tr><th>Book</th><th>Validated / total</th><th>Flagged</th>
+      <th></th><th></th></tr></thead><tbody>${bookRows}</tbody></table>
+    <h2>Daily activity (14 days)</h2>
+    <table class="stats"><thead><tr><th>Day</th><th>Validated</th></tr></thead><tbody>${dailyRows}</tbody></table>
+    <h2>Flagged documents</h2>
+    <table class="stats"><thead><tr><th>Document</th><th>Reason</th><th>Flagged by</th></tr></thead><tbody>${flaggedRows}</tbody></table>
+    <h2>Data ingestion</h2>
+    <p id="ri_status" style="color:var(--muted)">Checks every configured source (GCS, local data/) for deeds not yet loaded and adds them. Existing deeds are always skipped — this never resets or duplicates anything.</p>
+    <p><button class="primary" onclick="doReingest()">Check for new deeds</button></p>
+    <p style="margin-top:16px"><button class="primary" onclick="location.href='/api/export?token='+TOKEN">Download corrected dataset (JSON)</button></p>`;
+}
+
+// ---------- TEMPORARY: batch/mismatch dashboard, standing in for the
+// Review dashboard (nav-monitor / #monitor) while the main Dashboard tab
+// is too heavy to load everything at once. loadMonitor() below (the real
+// review-queue view) is left intact and untouched — revert by pointing
+// showView('monitor') back at loadMonitor() and restoring the nav label.
+async function loadVertexBatchDashboardTemp() {
+  const [mm, changes] = await Promise.all([
+    api('/admin/vertex-progress').catch(() => null),
+    api('/admin/vertex-changes/summary').catch(() => null)
+  ]);
+  let mmBlock = '<p style="color:var(--muted)">No batch data yet.</p>';
   if (mm && mm.total) {
     const pctDone = mm.total ? Math.round(mm.done / mm.total * 100) : 0;
     const mmCards = `<div class="cards">
@@ -2356,43 +2407,35 @@ async function loadProgress() {
       return `<tr><td>${e.full_name}</td><td>${e.remaining} / ${e.assigned}</td>
         <td>${e.done}</td><td>${e.corrected}</td><td>${r}%</td></tr>`;
     }).join('') || '<tr><td colspan="5">Not assigned yet</td></tr>';
-    mmBlock = `<h2>Mismatch batch (newly added deeds)</h2>${mmCards}
+    mmBlock = `${mmCards}
       <table class="stats"><thead><tr><th>Expert</th><th>Open / assigned</th>
         <th>Validated</th><th>Corrected</th><th>Correction rate</th></tr></thead>
         <tbody>${mmRows}</tbody></table>`;
   }
+  let changesBlock = '';
   if (changes && changes.length) {
     VERTEX_CHANGES = changes;
     const changeRows = changes.map((c, i) => `<tr style="cursor:pointer" onclick="showVertexChangeDetail(${i})">
         <td>${escHtml(c.section)}</td><td>${escHtml(c.label)}</td>
         <td>${escHtml(c.action_label)}</td><td>${c.change_count}</td>
         <td>${c.doc_count}</td><td>${c.last_change}</td></tr>`).join('');
-    mmBlock += `<h2>Field changes in this batch</h2>
+    changesBlock = `<h2>Field changes in this batch</h2>
       <p style="color:var(--muted);font-size:0.8333rem">Every field correction, addition, or deletion made across the batch,
         grouped by field and change type. Click a row to see the individual before/after values.</p>
       <table class="stats"><thead><tr><th>Section</th><th>Field</th><th>Change type</th>
         <th># changes</th><th># deeds</th><th>Last change</th></tr></thead>
         <tbody>${changeRows}</tbody></table>`;
   }
-  $('progress').innerHTML = `
-    <h1>Dashboard</h1>${cards}
+  $('monitor').innerHTML = `
+    <h1>Batch dashboard</h1>
+    <p style="color:var(--muted);font-size:0.9rem;margin-top:-8px">
+      Standing in here temporarily while the main Dashboard tab is too heavy — the real Review
+      dashboard is unchanged underneath and can be swapped back any time.</p>
+    <h2>Mismatch batch (newly added deeds)</h2>
     ${mmBlock}
-    <h2>Experts</h2>
-    <table class="stats"><thead><tr><th>Expert</th><th>Assigned (open / total)</th>
-      <th>Validated</th><th>Today</th><th>Last 7 days</th><th>Corrections</th>
-      <th>Flags</th><th>Last active</th></tr></thead><tbody>${expertRows}</tbody></table>
-    <h2>Progress by book</h2>
-    <table class="stats"><thead><tr><th>Book</th><th>Validated / total</th><th>Flagged</th>
-      <th></th><th></th></tr></thead><tbody>${bookRows}</tbody></table>
-    <h2>Daily activity (14 days)</h2>
-    <table class="stats"><thead><tr><th>Day</th><th>Validated</th></tr></thead><tbody>${dailyRows}</tbody></table>
-    <h2>Flagged documents</h2>
-    <table class="stats"><thead><tr><th>Document</th><th>Reason</th><th>Flagged by</th></tr></thead><tbody>${flaggedRows}</tbody></table>
-    <h2>Data ingestion</h2>
-    <p id="ri_status" style="color:var(--muted)">Checks every configured source (GCS, local data/) for deeds not yet loaded and adds them. Existing deeds are always skipped — this never resets or duplicates anything.</p>
-    <p><button class="primary" onclick="doReingest()">Check for new deeds</button></p>
-    <p style="margin-top:16px"><button class="primary" onclick="location.href='/api/export?token='+TOKEN">Download corrected dataset (JSON)</button></p>`;
+    ${changesBlock}`;
 }
+
 
 async function doReingest() {
   const el = $('ri_status');
