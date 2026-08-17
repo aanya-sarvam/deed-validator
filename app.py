@@ -1694,25 +1694,74 @@ ACTION_LABELS = {
 # been deleted (field_id is nulled out on delete, see delete_field()), so a
 # field's change history survives even after the field row is gone.
 _SECTION_EXPR = "COALESCE(f.section, 'Party items')"
-_LABEL_EXPR = "COALESCE(f.label, e.old_value, e.new_value, 'Item removed')"
+_LABEL_EXPR = "COALESCE(f.label, 'Item')"
+
+# ---------------------------------------------------------------------------
+# Autosave writes one edit_log row PER KEYSTROKE-BATCH, so a single reviewer
+# editing one address produces dozens of rows whose old/new values are
+# mid-word fragments. For the admin batch report we don't want that raw
+# stream — we want ONE net change per (deed, field, action): the value as it
+# was BEFORE the reviewer started (earliest old_value) vs. where it ENDED UP
+# (latest new_value).
+#
+# _NET_CHANGES_CTE is the *body* of a CTE (no leading WITH) — callers wrap it
+# as "WITH net AS (<this>) SELECT ...". It yields one row per
+# (document_id, grp_field, action):
+#   first_ts / last_ts — bounds of the editing session on that field
+#   old_value          — old_value from the earliest row (true starting point)
+#   new_value          — new_value from the latest row (final settled value)
+#   raw_count          — how many autosave rows collapsed into this
+#   section / label    — resolved from the field (fallbacks if since deleted)
+#
+# Net no-ops (old_value == new_value, i.e. typed then reverted) are dropped.
+# field_id is NULL for deletes, so grouping uses COALESCE(field_id,-1).
+_NET_CHANGES_CTE = f"""
+    SELECT
+        agg.document_id, agg.grp_field, agg.action,
+        agg.first_ts, agg.last_ts, agg.raw_count,
+        fv.old_value, lv.new_value,
+        {_SECTION_EXPR} AS section, {_LABEL_EXPR} AS label
+    FROM (
+        SELECT e.document_id, COALESCE(e.field_id, -1) AS grp_field, e.action,
+               MIN(e.ts) AS first_ts, MAX(e.ts) AS last_ts, COUNT(*) AS raw_count
+        FROM edit_log e
+        JOIN documents d ON d.id = e.document_id
+        WHERE d.source = 'vertex' AND e.action = ANY(%(actions)s)
+        GROUP BY e.document_id, COALESCE(e.field_id, -1), e.action
+    ) agg
+    JOIN LATERAL (
+        SELECT e.old_value FROM edit_log e
+        WHERE e.document_id = agg.document_id
+          AND COALESCE(e.field_id, -1) = agg.grp_field
+          AND e.action = agg.action
+        ORDER BY e.ts ASC LIMIT 1
+    ) fv ON TRUE
+    JOIN LATERAL (
+        SELECT e.new_value FROM edit_log e
+        WHERE e.document_id = agg.document_id
+          AND COALESCE(e.field_id, -1) = agg.grp_field
+          AND e.action = agg.action
+        ORDER BY e.ts DESC LIMIT 1
+    ) lv ON TRUE
+    LEFT JOIN fields f ON f.id = NULLIF(agg.grp_field, -1)
+    WHERE COALESCE(fv.old_value, '') <> COALESCE(lv.new_value, '')
+"""
 
 
 @app.get("/api/admin/vertex-changes/summary")
 def vertex_changes_summary(user=Depends(require_admin)):
-    """Aggregates every field-level change made across the vertex batch
-    (the ~1002 newly added deeds), grouped by section + field + type of
-    change, so an admin can see WHAT kinds of fields get corrected and HOW,
-    rather than having to open deeds one at a time."""
+    """One row per (section, field, change-type) across the vertex batch,
+    where each underlying change is the NET before→after for a field on a
+    deed (autosave keystroke-rows are collapsed), so counts reflect real
+    corrections rather than how many times autosave fired."""
+    q = ("WITH net AS (" + _NET_CHANGES_CTE + ") "
+         "SELECT section, label, action, COUNT(*) AS change_count, "
+         "       COUNT(DISTINCT document_id) AS doc_count, "
+         "       MAX(last_ts) AS last_change "
+         "FROM net GROUP BY section, label, action "
+         "ORDER BY change_count DESC")
     with connect() as con:
-        rows = con.execute(
-            f"SELECT {_SECTION_EXPR} AS section, {_LABEL_EXPR} AS label, "
-            "e.action, COUNT(*) change_count, "
-            "COUNT(DISTINCT e.document_id) doc_count, MAX(e.ts) last_change "
-            "FROM edit_log e JOIN documents d ON d.id = e.document_id "
-            "LEFT JOIN fields f ON f.id = e.field_id "
-            "WHERE d.source = 'vertex' AND e.action = ANY(%(actions)s) "
-            "GROUP BY 1, 2, e.action ORDER BY change_count DESC",
-            {"actions": list(FIELD_CHANGE_ACTIONS)}).fetchall()
+        rows = con.execute(q, {"actions": list(FIELD_CHANGE_ACTIONS)}).fetchall()
     out = []
     for r in rows:
         r = dict(r)
@@ -1725,26 +1774,31 @@ def vertex_changes_summary(user=Depends(require_admin)):
 @app.get("/api/admin/vertex-changes/detail")
 def vertex_changes_detail(section: str, label: str, action: str,
                            user=Depends(require_admin)):
-    """Every individual change behind one summary row: which deed, old
-    value, new value, who made it, when — so an admin can drill into e.g.
-    'Buyer / Name / Corrected (English)' and see the actual edits."""
+    """The net changes behind one summary row: one entry per deed where this
+    field changed, showing the value BEFORE editing began and the FINAL value
+    it settled on (not the mid-word autosave fragments)."""
     if action not in FIELD_CHANGE_ACTIONS:
         raise HTTPException(400, "Unknown action")
+    q = ("WITH net AS (" + _NET_CHANGES_CTE + ") "
+         "SELECT n.document_id AS doc_id, n.old_value, n.new_value, "
+         "       n.last_ts AS ts, n.first_ts, n.raw_count, "
+         "       d.deed_number, "
+         "       (SELECT u.full_name FROM edit_log e2 JOIN users u ON u.id = e2.user_id "
+         "        WHERE e2.document_id = n.document_id AND e2.action = n.action "
+         "          AND COALESCE(e2.field_id, -1) = n.grp_field AND e2.ts = n.last_ts "
+         "        LIMIT 1) AS by_name "
+         "FROM net n JOIN documents d ON d.id = n.document_id "
+         "WHERE n.section = %(section)s AND n.label = %(label)s AND n.action = %(action)s "
+         "ORDER BY n.last_ts DESC")
     with connect() as con:
-        rows = con.execute(
-            f"SELECT e.ts, e.old_value, e.new_value, u.full_name AS by_name, "
-            "d.id AS doc_id, d.deed_number "
-            "FROM edit_log e JOIN documents d ON d.id = e.document_id "
-            "JOIN users u ON u.id = e.user_id "
-            "LEFT JOIN fields f ON f.id = e.field_id "
-            f"WHERE d.source='vertex' AND e.action = %(action)s "
-            f"AND {_SECTION_EXPR} = %(section)s AND {_LABEL_EXPR} = %(label)s "
-            "ORDER BY e.ts DESC",
-            {"action": action, "section": section, "label": label}).fetchall()
+        rows = con.execute(q, {"actions": list(FIELD_CHANGE_ACTIONS),
+                                "section": section, "label": label,
+                                "action": action}).fetchall()
     out = []
     for r in rows:
         r = dict(r)
         r["ts"] = str(r["ts"])[:19]
+        r.pop("first_ts", None)
         out.append(r)
     return out
 

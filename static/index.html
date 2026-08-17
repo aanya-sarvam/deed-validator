@@ -917,6 +917,20 @@ function closeModal() { $('modal-root').innerHTML = ''; }
 
 /* ---------- vertex batch: field-changes drill-down ---------- */
 let VERTEX_CHANGES = [];
+
+// Render one side of a before/after cell with clear empty/added/removed
+// semantics rather than a raw blank:
+//   • value present            -> the text
+//   • empty on the "From" side  -> "(was empty)"  (i.e. this was newly filled)
+//   • empty on the "To" side    -> "(cleared)"    (i.e. field was emptied)
+function fmtChangeVal(val, side) {
+  const v = (val == null ? '' : String(val)).trim();
+  if (v) return escHtml(v);
+  return side === 'from'
+    ? '<span style="color:var(--muted);font-style:italic">(was empty)</span>'
+    : '<span style="color:var(--muted);font-style:italic">(cleared)</span>';
+}
+
 async function showVertexChangeDetail(i) {
   const c = VERTEX_CHANGES[i];
   if (!c) return;
@@ -925,15 +939,22 @@ async function showVertexChangeDetail(i) {
     rows = await api(`/admin/vertex-changes/detail?section=${encodeURIComponent(c.section)}`
       + `&label=${encodeURIComponent(c.label)}&action=${encodeURIComponent(c.action)}`);
   } catch (e) { alert(e.message); return; }
-  const body = rows.length ? rows.map(r => `<tr style="cursor:pointer" onclick="closeModal();openDoc(${r.doc_id})">
-      <td>${r.ts}</td><td class="mono">${r.deed_number}</td><td>${r.by_name}</td>
-      <td style="color:var(--muted)">${r.old_value || '(empty)'}</td>
-      <td style="color:var(--ok)">${r.new_value || '(empty)'}</td></tr>`).join('')
-    : '<tr><td colspan="5" style="color:var(--muted)">No changes recorded.</td></tr>';
+  const body = rows.length ? rows.map(r => {
+    const fromEmpty = !(r.old_value || '').trim(), toEmpty = !(r.new_value || '').trim();
+    // Tag the nature of the net change so rules 4 & 5 read at a glance.
+    let tag = '';
+    if (fromEmpty && !toEmpty) tag = '<span class="userfield-tag" style="background:var(--ok);color:#fff">added</span> ';
+    else if (!fromEmpty && toEmpty) tag = '<span class="userfield-tag" style="background:#c0392b;color:#fff">removed</span> ';
+    return `<tr style="cursor:pointer" onclick="closeModal();openDoc(${r.doc_id})">
+      <td>${r.ts}</td><td class="mono">${r.deed_number}</td><td>${r.by_name || '—'}</td>
+      <td style="color:var(--muted)">${fmtChangeVal(r.old_value, 'from')}</td>
+      <td>${tag}<span style="color:var(--ok)">${fmtChangeVal(r.new_value, 'to')}</span></td></tr>`;
+  }).join('')
+    : '<tr><td colspan="5" style="color:var(--muted)">No net changes recorded.</td></tr>';
   $('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)closeModal()">
     <div class="modal">
       <h2>${escHtml(c.section)} · ${escHtml(c.label)}</h2>
-      <p style="color:var(--muted);font-size:0.85rem;margin-top:-8px">${escHtml(c.action_label)} — click a row to open that deed.</p>
+      <p style="color:var(--muted);font-size:0.85rem;margin-top:-8px">${escHtml(c.action_label)} — one row per deed, showing the value before editing began and the final value. Click a row to open that deed.</p>
       <table class="stats"><thead><tr><th>When</th><th>Deed</th><th>By</th>
         <th>From</th><th>To</th></tr></thead><tbody>${body}</tbody></table>
       <p style="margin-top:14px"><button onclick="closeModal()">Close</button></p>
