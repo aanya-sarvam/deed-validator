@@ -1690,13 +1690,21 @@ def vertex_progress(group: str = "all", user=Depends(require_admin)):
 # Only these edit_log actions represent an actual change to a field's
 # content (as opposed to lifecycle actions like 'approve'/'flag'/'reopen').
 FIELD_CHANGE_ACTIONS = ("edit", "edit_odia", "add_field", "delete_field", "delete_party_item")
+# We no longer split a field's correction by which box (Odia/English) changed —
+# a correction is one before→after per field, regardless of script. edit and
+# edit_odia both collapse to the coarse kind 'corrected'; add/delete stay
+# distinct because they're genuinely different kinds of change.
+ACTION_KIND_SQL = (
+    "CASE WHEN e.action IN ('edit','edit_odia') THEN 'corrected' "
+    "ELSE e.action END")
 ACTION_LABELS = {
-    "edit": "Corrected (English)",
-    "edit_odia": "Corrected (Odia)",
+    "corrected": "Corrected",
     "add_field": "New field added",
     "delete_field": "Field deleted",
     "delete_party_item": "Party item removed",
 }
+# The coarse kinds the report emits (after merging edit/edit_odia -> corrected).
+VALID_CHANGE_KINDS = ("corrected", "add_field", "delete_field", "delete_party_item")
 # Grouping key shared by both endpoints below: section/label fall back to the
 # text carried directly on the edit_log row when the field itself has since
 # been deleted (field_id is nulled out on delete, see delete_field()), so a
@@ -1751,63 +1759,59 @@ _LABEL_EXPR = "COALESCE(f.label, 'Item')"
 # This is purely a reporting filter, layered on top of source='vertex'; it
 # has no bearing on is_priority or the validation queue.
 _DONE_STATES_SQL = "('validated','reviewed','in_monitor_review')"
-# "From" (the before value) must be the ORIGINAL EXTRACTED value shown to the
-# reviewer when they opened the deed — NOT the earliest edit_log.old_value,
-# which (because autosave fires per keystroke) is already a half-typed
-# fragment like "sa" or "ni". The true immutable originals live on the fields
-# row: ocr_value for English (never updated after ingest) and
-# src_block->>'odia_text' for Odia (odia_value itself is mutated on edit, so
-# it can't be used). For deletes/add_field there's no meaningful original
-# field value (add started empty; delete rows may have no field), so those
-# fall back to the earliest edit_log.old_value.
-_FROM_VALUE_SQL = """
+# The whole report is vertex-batch-only. For that batch the two boxes are:
+#   English box (hidden)  = original IGR metadata — NEVER edited, ignore it.
+#   Odia box (visible)    = Gemini's extraction, which experts verify/correct.
+# So a change is ALWAYS the Odia box: before = Gemini's extraction (the
+# immutable original in src_block->>'odia_text'), after = odia_value (what the
+# expert corrected it to). No English fallback — surfacing the untouched IGR
+# metadata as a "before/after" would be wrong here. add/delete kinds have no
+# box pair, so they fall back to the edit_log first-old / last-new values.
+_ODIA_ORIG = "COALESCE(f.src_block->>'odia_text', '')"
+_ODIA_NOW  = "COALESCE(f.odia_value, '')"
+# "From": Gemini's original Odia-box extraction; edit_log fallback for add/delete.
+_FROM_VALUE_SQL = f"""
     CASE
-        WHEN agg.action = 'edit'      AND f.id IS NOT NULL THEN f.ocr_value
-        WHEN agg.action = 'edit_odia' AND f.id IS NOT NULL THEN COALESCE(f.src_block->>'odia_text', '')
+        WHEN agg.kind = 'corrected' AND f.id IS NOT NULL THEN {_ODIA_ORIG}
         ELSE fv.old_value
     END"""
-# "To" (the after value) = whatever is in that box NOW. For an edit that's the
-# live field state (current_value for English, odia_value for Odia — both hold
-# the reviewer's final typed value). Using the live field rather than the last
-# edit_log.new_value is more robust (they should agree, but the field row is
-# the source of truth for "what's in the box"). Deletes/adds fall back to the
-# latest edit_log.new_value.
-_TO_VALUE_SQL = """
+# "To": the corrected Odia-box value.
+_TO_VALUE_SQL = f"""
     CASE
-        WHEN agg.action = 'edit'      AND f.id IS NOT NULL THEN f.current_value
-        WHEN agg.action = 'edit_odia' AND f.id IS NOT NULL THEN f.odia_value
+        WHEN agg.kind = 'corrected' AND f.id IS NOT NULL THEN {_ODIA_NOW}
         ELSE lv.new_value
     END"""
 _NET_CHANGES_CTE = f"""
     SELECT
-        agg.document_id, agg.grp_field, agg.action,
+        agg.document_id, agg.grp_field, agg.kind AS action,
         agg.first_ts, agg.last_ts, agg.raw_count,
         {_FROM_VALUE_SQL} AS old_value, {_TO_VALUE_SQL} AS new_value,
         {_SECTION_EXPR} AS section, {_LABEL_EXPR} AS label
     FROM (
-        SELECT e.document_id, COALESCE(e.field_id, -1) AS grp_field, e.action,
+        SELECT e.document_id, COALESCE(e.field_id, -1) AS grp_field,
+               {ACTION_KIND_SQL} AS kind,
                MIN(e.ts) AS first_ts, MAX(e.ts) AS last_ts, COUNT(*) AS raw_count
         FROM edit_log e
         JOIN documents d ON d.id = e.document_id
         WHERE d.source = 'vertex' AND e.action = ANY(%(actions)s)
           AND d.status IN {_DONE_STATES_SQL}
           AND (%(group)s = 'all' OR d.vertex_group = %(group)s)
-        GROUP BY e.document_id, COALESCE(e.field_id, -1), e.action
+        GROUP BY e.document_id, COALESCE(e.field_id, -1), {ACTION_KIND_SQL}
     ) agg
     LEFT JOIN fields f ON f.id = NULLIF(agg.grp_field, -1)
-    -- fallback "from"/"to" for deletes/adds (no live field pair to compare)
+    -- fallback "from"/"to" for add/delete kinds (no box pair to compare)
     JOIN LATERAL (
         SELECT e.old_value FROM edit_log e
         WHERE e.document_id = agg.document_id
           AND COALESCE(e.field_id, -1) = agg.grp_field
-          AND e.action = agg.action
+          AND {ACTION_KIND_SQL} = agg.kind
         ORDER BY e.ts ASC LIMIT 1
     ) fv ON TRUE
     JOIN LATERAL (
         SELECT e.new_value FROM edit_log e
         WHERE e.document_id = agg.document_id
           AND COALESCE(e.field_id, -1) = agg.grp_field
-          AND e.action = agg.action
+          AND {ACTION_KIND_SQL} = agg.kind
         ORDER BY e.ts DESC LIMIT 1
     ) lv ON TRUE
     WHERE COALESCE({_FROM_VALUE_SQL}, '') <> COALESCE({_TO_VALUE_SQL}, '')
@@ -1853,18 +1857,22 @@ def vertex_changes_detail(section: str, label: str, action: str, group: str = "a
     group: 'all' (default), 'mismatch', or 'control' — must match the group
     the summary row was fetched with, so drill-down stays consistent with
     whichever split the admin is currently viewing."""
-    if action not in FIELD_CHANGE_ACTIONS:
+    if action not in VALID_CHANGE_KINDS:
         raise HTTPException(400, "Unknown action")
     if group not in ("all", "mismatch", "control"):
         raise HTTPException(400, "group must be 'all', 'mismatch', or 'control'")
+    # by_name: find who made the final edit in this field's session. n.action is
+    # the coarse kind ('corrected' etc.), so match e2 via the same kind mapping
+    # rather than raw e2.action, and take the latest editor at/around last_ts.
     q = ("WITH net AS (" + _NET_CHANGES_CTE + ") "
          "SELECT n.document_id AS doc_id, n.old_value, n.new_value, "
          "       n.last_ts AS ts, n.first_ts, n.raw_count, "
          "       d.deed_number, "
          "       (SELECT u.full_name FROM edit_log e2 JOIN users u ON u.id = e2.user_id "
-         "        WHERE e2.document_id = n.document_id AND e2.action = n.action "
-         "          AND COALESCE(e2.field_id, -1) = n.grp_field AND e2.ts = n.last_ts "
-         "        LIMIT 1) AS by_name "
+         "        WHERE e2.document_id = n.document_id "
+         "          AND (CASE WHEN e2.action IN ('edit','edit_odia') THEN 'corrected' ELSE e2.action END) = n.action "
+         "          AND COALESCE(e2.field_id, -1) = n.grp_field "
+         "        ORDER BY e2.ts DESC LIMIT 1) AS by_name "
          "FROM net n JOIN documents d ON d.id = n.document_id "
          "WHERE n.section = %(section)s AND n.label = %(label)s AND n.action = %(action)s "
          "ORDER BY n.last_ts DESC")
