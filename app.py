@@ -1693,7 +1693,21 @@ ACTION_LABELS = {
 # text carried directly on the edit_log row when the field itself has since
 # been deleted (field_id is nulled out on delete, see delete_field()), so a
 # field's change history survives even after the field row is gone.
-_SECTION_EXPR = "COALESCE(f.section, 'Party items')"
+# Party sections are stored with the deed's item count baked in — "Seller",
+# "Sellers (2)", "Sellers (3)", "Buyers (54)" — so the SAME logical field on
+# deeds with different party counts would otherwise split into separate report
+# rows, fragmenting one field across many lines. We canonicalise by dropping
+# the trailing " (N)" and folding the plural back to the singular, so every
+# seller-address row lands on one "Seller / Address" line whose distinct-deed
+# count is the true number of deeds. _canon_section() below is the Python
+# mirror of this used when de-duplicating in the detail endpoint.
+_SECTION_STRIP = r"regexp_replace(COALESCE(f.section, 'Party items'), '\s*\(\d+\)\s*$', '')"
+_SECTION_EXPR = (
+    f"CASE {_SECTION_STRIP} "
+    "WHEN 'Sellers' THEN 'Seller' "
+    "WHEN 'Buyers' THEN 'Buyer' "
+    "WHEN 'Properties' THEN 'Property' "
+    f"ELSE {_SECTION_STRIP} END")
 _LABEL_EXPR = "COALESCE(f.label, 'Item')"
 
 # ---------------------------------------------------------------------------
