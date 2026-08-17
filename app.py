@@ -1729,6 +1729,15 @@ _LABEL_EXPR = "COALESCE(f.label, 'Item')"
 #
 # Net no-ops (old_value == new_value, i.e. typed then reverted) are dropped.
 # field_id is NULL for deletes, so grouping uses COALESCE(field_id,-1).
+#
+# Scope: only deeds that are actually DONE (status in validated / reviewed /
+# in_monitor_review) are counted, matching the "corrected" card on the batch
+# dashboard. Without this, a deed edited but still pending/in_review would
+# inflate "# deeds" past the number of corrected deeds — an expert can touch
+# a field mid-review and then not finish, and that shouldn't count as a
+# corrected deed. Keeping the two definitions aligned means the per-field
+# "# deeds" can never exceed the batch's total corrected count.
+_DONE_STATES_SQL = "('validated','reviewed','in_monitor_review')"
 _NET_CHANGES_CTE = f"""
     SELECT
         agg.document_id, agg.grp_field, agg.action,
@@ -1741,6 +1750,7 @@ _NET_CHANGES_CTE = f"""
         FROM edit_log e
         JOIN documents d ON d.id = e.document_id
         WHERE d.source = 'vertex' AND e.action = ANY(%(actions)s)
+          AND d.status IN {_DONE_STATES_SQL}
         GROUP BY e.document_id, COALESCE(e.field_id, -1), e.action
     ) agg
     JOIN LATERAL (
