@@ -133,6 +133,17 @@ CREATE INDEX IF NOT EXISTS idx_docs_priority ON documents(is_priority) WHERE is_
 -- right bucket+credentials: 'classification' (existing corpus) | 'vertex'
 -- (vision-vertex-batch-asia-south1).
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'classification';
+-- Dashboard-only split of the vertex batch into the 502 Gemini-mismatch deeds
+-- vs the 500 random controls. This is purely for reporting/analytics — it does
+-- NOT affect the priority queue, assignment, or validation ordering (those key
+-- off is_priority, which stays TRUE for the whole vertex batch). Populated once
+-- by tag_vertex_groups.py from the known list of 500 control reg_nos: deeds in
+-- that list -> 'control', the rest of the vertex batch -> 'mismatch'. NULL for
+-- non-vertex deeds.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS vertex_group TEXT
+    CHECK (vertex_group IN ('mismatch','control'));
+CREATE INDEX IF NOT EXISTS idx_docs_vertex_group ON documents(vertex_group)
+    WHERE vertex_group IS NOT NULL;
 """
 
 SEED_USERS = [

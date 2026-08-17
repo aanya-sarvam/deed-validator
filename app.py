@@ -1627,20 +1627,30 @@ def admin_dashboard(user=Depends(require_admin)):
 
 
 @app.get("/api/admin/vertex-progress")
-def vertex_progress(user=Depends(require_admin)):
+def vertex_progress(group: str = "all", user=Depends(require_admin)):
     """Progress + accuracy tracker scoped to the vertex mismatch batch
     (source='vertex') only. Reports how many of the ~1002 newly added deeds
     are validated vs pending, how many needed corrections, and the correction
     rate (share of completed deeds where the expert edited at least one field
     — i.e. how often Gemini's extraction was wrong on this batch). 'done' =
     status in validated/reviewed/in_monitor_review; a deed counts as corrected
-    if it has any edit_log 'edit' action."""
+    if it has any edit_log 'edit' action.
+
+    group: 'all' (default, the whole ~1002), 'mismatch' (the 502
+    Gemini-mismatch deeds), or 'control' (the 500 random controls) — see
+    vertex_group, set once by tag_vertex_groups.py. This is a reporting-only
+    split; it never touches is_priority / the validation queue."""
+    if group not in ("all", "mismatch", "control"):
+        raise HTTPException(400, "group must be 'all', 'mismatch', or 'control'")
+    grp_where = "" if group == "all" else " AND vertex_group = %(group)s"
+    grp_where_d = "" if group == "all" else " AND d.vertex_group = %(group)s"
     done_states = ("validated", "reviewed", "in_monitor_review")
     pending_states = ("pending", "in_review")
+    params = {"done": list(done_states), "pending": list(pending_states), "group": group}
     with connect() as con:
         by_status = {r["status"]: r["c"] for r in con.execute(
-            "SELECT status, COUNT(*) c FROM documents WHERE source='vertex' "
-            "GROUP BY status")}
+            f"SELECT status, COUNT(*) c FROM documents WHERE source='vertex'{grp_where} "
+            "GROUP BY status", params)}
         agg = con.execute(
             "SELECT COUNT(*) total, "
             "COUNT(*) FILTER (WHERE status = ANY(%(done)s)) done, "
@@ -1650,11 +1660,10 @@ def vertex_progress(user=Depends(require_admin)):
             "COUNT(*) FILTER (WHERE status = ANY(%(done)s) AND EXISTS ("
             "  SELECT 1 FROM edit_log e WHERE e.document_id=documents.id "
             "  AND e.action='edit')) corrected "
-            "FROM documents WHERE source='vertex'",
-            {"done": list(done_states), "pending": list(pending_states)}).fetchone()
+            f"FROM documents WHERE source='vertex'{grp_where}", params).fetchone()
         field_edits = con.execute(
             "SELECT COUNT(*) c FROM edit_log e JOIN documents d ON d.id=e.document_id "
-            "WHERE d.source='vertex' AND e.action='edit'").fetchone()["c"]
+            f"WHERE d.source='vertex' AND e.action='edit'{grp_where_d}", params).fetchone()["c"]
         experts = [dict(r) for r in con.execute(
             "SELECT u.id, u.full_name, "
             "COUNT(d.id) assigned, "
@@ -1664,10 +1673,9 @@ def vertex_progress(user=Depends(require_admin)):
             "  SELECT 1 FROM edit_log e WHERE e.document_id=d.id AND e.action='edit'"
             ")) corrected "
             "FROM users u LEFT JOIN documents d "
-            "  ON d.assigned_to=u.id AND d.source='vertex' "
+            f"  ON d.assigned_to=u.id AND d.source='vertex'{grp_where_d} "
             "WHERE u.role='expert' GROUP BY u.id, u.full_name "
-            "ORDER BY done DESC, u.id",
-            {"done": list(done_states), "pending": list(pending_states)}).fetchall()]
+            "ORDER BY done DESC, u.id", params).fetchall()]
     total = agg["total"]
     done = agg["done"]
     correction_rate = round(agg["corrected"] / done * 100) if done else 0
@@ -1676,7 +1684,7 @@ def vertex_progress(user=Depends(require_admin)):
             "pending": agg["pending"], "flagged": agg["flagged"],
             "corrected": agg["corrected"], "field_edits": field_edits,
             "correction_rate": correction_rate, "by_status": by_status,
-            "experts": experts}
+            "experts": experts, "group": group}
 
 
 # Only these edit_log actions represent an actual change to a field's
@@ -1737,6 +1745,11 @@ _LABEL_EXPR = "COALESCE(f.label, 'Item')"
 # a field mid-review and then not finish, and that shouldn't count as a
 # corrected deed. Keeping the two definitions aligned means the per-field
 # "# deeds" can never exceed the batch's total corrected count.
+#
+# Also supports the mismatch(502) vs control(500) split via vertex_group
+# (see tag_vertex_groups.py) — %(group)s is 'all' / 'mismatch' / 'control'.
+# This is purely a reporting filter, layered on top of source='vertex'; it
+# has no bearing on is_priority or the validation queue.
 _DONE_STATES_SQL = "('validated','reviewed','in_monitor_review')"
 _NET_CHANGES_CTE = f"""
     SELECT
@@ -1751,6 +1764,7 @@ _NET_CHANGES_CTE = f"""
         JOIN documents d ON d.id = e.document_id
         WHERE d.source = 'vertex' AND e.action = ANY(%(actions)s)
           AND d.status IN {_DONE_STATES_SQL}
+          AND (%(group)s = 'all' OR d.vertex_group = %(group)s)
         GROUP BY e.document_id, COALESCE(e.field_id, -1), e.action
     ) agg
     JOIN LATERAL (
@@ -1773,11 +1787,16 @@ _NET_CHANGES_CTE = f"""
 
 
 @app.get("/api/admin/vertex-changes/summary")
-def vertex_changes_summary(user=Depends(require_admin)):
+def vertex_changes_summary(group: str = "all", user=Depends(require_admin)):
     """One row per (section, field, change-type) across the vertex batch,
     where each underlying change is the NET before→after for a field on a
     deed (autosave keystroke-rows are collapsed), so counts reflect real
-    corrections rather than how many times autosave fired."""
+    corrections rather than how many times autosave fired.
+
+    group: 'all' (default), 'mismatch' (the 502), or 'control' (the 500) —
+    see vertex_group / tag_vertex_groups.py. Reporting-only split."""
+    if group not in ("all", "mismatch", "control"):
+        raise HTTPException(400, "group must be 'all', 'mismatch', or 'control'")
     q = ("WITH net AS (" + _NET_CHANGES_CTE + ") "
          "SELECT section, label, action, COUNT(*) AS change_count, "
          "       COUNT(DISTINCT document_id) AS doc_count, "
@@ -1785,7 +1804,8 @@ def vertex_changes_summary(user=Depends(require_admin)):
          "FROM net GROUP BY section, label, action "
          "ORDER BY change_count DESC")
     with connect() as con:
-        rows = con.execute(q, {"actions": list(FIELD_CHANGE_ACTIONS)}).fetchall()
+        rows = con.execute(q, {"actions": list(FIELD_CHANGE_ACTIONS),
+                                "group": group}).fetchall()
     out = []
     for r in rows:
         r = dict(r)
@@ -1796,13 +1816,19 @@ def vertex_changes_summary(user=Depends(require_admin)):
 
 
 @app.get("/api/admin/vertex-changes/detail")
-def vertex_changes_detail(section: str, label: str, action: str,
+def vertex_changes_detail(section: str, label: str, action: str, group: str = "all",
                            user=Depends(require_admin)):
     """The net changes behind one summary row: one entry per deed where this
     field changed, showing the value BEFORE editing began and the FINAL value
-    it settled on (not the mid-word autosave fragments)."""
+    it settled on (not the mid-word autosave fragments).
+
+    group: 'all' (default), 'mismatch', or 'control' — must match the group
+    the summary row was fetched with, so drill-down stays consistent with
+    whichever split the admin is currently viewing."""
     if action not in FIELD_CHANGE_ACTIONS:
         raise HTTPException(400, "Unknown action")
+    if group not in ("all", "mismatch", "control"):
+        raise HTTPException(400, "group must be 'all', 'mismatch', or 'control'")
     q = ("WITH net AS (" + _NET_CHANGES_CTE + ") "
          "SELECT n.document_id AS doc_id, n.old_value, n.new_value, "
          "       n.last_ts AS ts, n.first_ts, n.raw_count, "
@@ -1817,7 +1843,7 @@ def vertex_changes_detail(section: str, label: str, action: str,
     with connect() as con:
         rows = con.execute(q, {"actions": list(FIELD_CHANGE_ACTIONS),
                                 "section": section, "label": label,
-                                "action": action}).fetchall()
+                                "action": action, "group": group}).fetchall()
     out = []
     for r in rows:
         r = dict(r)

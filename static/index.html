@@ -937,7 +937,8 @@ async function showVertexChangeDetail(i) {
   let rows;
   try {
     rows = await api(`/admin/vertex-changes/detail?section=${encodeURIComponent(c.section)}`
-      + `&label=${encodeURIComponent(c.label)}&action=${encodeURIComponent(c.action)}`);
+      + `&label=${encodeURIComponent(c.label)}&action=${encodeURIComponent(c.action)}`
+      + `&group=${encodeURIComponent(VERTEX_GROUP)}`);
   } catch (e) { alert(e.message); return; }
   const body = rows.length ? rows.map(r => {
     const fromEmpty = !(r.old_value || '').trim(), toEmpty = !(r.new_value || '').trim();
@@ -2405,11 +2406,19 @@ async function loadProgress() {
 // is too heavy to load everything at once. loadMonitor() below (the real
 // review-queue view) is left intact and untouched — revert by pointing
 // showView('monitor') back at loadMonitor() and restoring the nav label.
+let VERTEX_GROUP = 'all'; // 'all' | 'mismatch' | 'control' — dashboard-only split, see tag_vertex_groups.py
+function setVertexGroup(g) { VERTEX_GROUP = g; loadVertexBatchDashboardTemp(); }
+
 async function loadVertexBatchDashboardTemp() {
+  const qs = `?group=${encodeURIComponent(VERTEX_GROUP)}`;
   const [mm, changes] = await Promise.all([
-    api('/admin/vertex-progress').catch(() => null),
-    api('/admin/vertex-changes/summary').catch(() => null)
+    api('/admin/vertex-progress' + qs).catch(() => null),
+    api('/admin/vertex-changes/summary' + qs).catch(() => null)
   ]);
+  const groupTabs = `<div class="tasktabs" style="margin-bottom:14px">
+    ${[['all','All (1002)'],['mismatch','Mismatches (502)'],['control','Controls (500)']].map(([g, lbl]) =>
+      `<button class="tasktab ${VERTEX_GROUP === g ? 'active' : ''}" onclick="setVertexGroup('${g}')">${lbl}</button>`).join('')}
+  </div>`;
   let mmBlock = '<p style="color:var(--muted)">No batch data yet.</p>';
   if (mm && mm.total) {
     const pctDone = mm.total ? Math.round(mm.done / mm.total * 100) : 0;
@@ -2432,6 +2441,8 @@ async function loadVertexBatchDashboardTemp() {
       <table class="stats"><thead><tr><th>Expert</th><th>Open / assigned</th>
         <th>Validated</th><th>Corrected</th><th>Correction rate</th></tr></thead>
         <tbody>${mmRows}</tbody></table>`;
+  } else if (mm) {
+    mmBlock = '<p style="color:var(--muted)">No deeds in this group.</p>';
   }
   let changesBlock = '';
   if (changes && changes.length) {
@@ -2446,12 +2457,15 @@ async function loadVertexBatchDashboardTemp() {
       <table class="stats"><thead><tr><th>Section</th><th>Field</th><th>Change type</th>
         <th># changes</th><th># deeds</th><th>Last change</th></tr></thead>
         <tbody>${changeRows}</tbody></table>`;
+  } else if (changes) {
+    changesBlock = '<h2>Field changes in this batch</h2><p style="color:var(--muted)">No changes recorded for this group yet.</p>';
   }
   $('monitor').innerHTML = `
     <h1>Batch dashboard</h1>
     <p style="color:var(--muted);font-size:0.9rem;margin-top:-8px">
       Standing in here temporarily while the main Dashboard tab is too heavy — the real Review
       dashboard is unchanged underneath and can be swapped back any time.</p>
+    ${groupTabs}
     <h2>Mismatch batch (newly added deeds)</h2>
     ${mmBlock}
     ${changesBlock}`;
