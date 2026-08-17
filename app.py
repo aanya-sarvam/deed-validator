@@ -1751,11 +1751,38 @@ _LABEL_EXPR = "COALESCE(f.label, 'Item')"
 # This is purely a reporting filter, layered on top of source='vertex'; it
 # has no bearing on is_priority or the validation queue.
 _DONE_STATES_SQL = "('validated','reviewed','in_monitor_review')"
+# "From" (the before value) must be the ORIGINAL EXTRACTED value shown to the
+# reviewer when they opened the deed — NOT the earliest edit_log.old_value,
+# which (because autosave fires per keystroke) is already a half-typed
+# fragment like "sa" or "ni". The true immutable originals live on the fields
+# row: ocr_value for English (never updated after ingest) and
+# src_block->>'odia_text' for Odia (odia_value itself is mutated on edit, so
+# it can't be used). For deletes/add_field there's no meaningful original
+# field value (add started empty; delete rows may have no field), so those
+# fall back to the earliest edit_log.old_value.
+_FROM_VALUE_SQL = """
+    CASE
+        WHEN agg.action = 'edit'      AND f.id IS NOT NULL THEN f.ocr_value
+        WHEN agg.action = 'edit_odia' AND f.id IS NOT NULL THEN COALESCE(f.src_block->>'odia_text', '')
+        ELSE fv.old_value
+    END"""
+# "To" (the after value) = whatever is in that box NOW. For an edit that's the
+# live field state (current_value for English, odia_value for Odia — both hold
+# the reviewer's final typed value). Using the live field rather than the last
+# edit_log.new_value is more robust (they should agree, but the field row is
+# the source of truth for "what's in the box"). Deletes/adds fall back to the
+# latest edit_log.new_value.
+_TO_VALUE_SQL = """
+    CASE
+        WHEN agg.action = 'edit'      AND f.id IS NOT NULL THEN f.current_value
+        WHEN agg.action = 'edit_odia' AND f.id IS NOT NULL THEN f.odia_value
+        ELSE lv.new_value
+    END"""
 _NET_CHANGES_CTE = f"""
     SELECT
         agg.document_id, agg.grp_field, agg.action,
         agg.first_ts, agg.last_ts, agg.raw_count,
-        fv.old_value, lv.new_value,
+        {_FROM_VALUE_SQL} AS old_value, {_TO_VALUE_SQL} AS new_value,
         {_SECTION_EXPR} AS section, {_LABEL_EXPR} AS label
     FROM (
         SELECT e.document_id, COALESCE(e.field_id, -1) AS grp_field, e.action,
@@ -1767,6 +1794,8 @@ _NET_CHANGES_CTE = f"""
           AND (%(group)s = 'all' OR d.vertex_group = %(group)s)
         GROUP BY e.document_id, COALESCE(e.field_id, -1), e.action
     ) agg
+    LEFT JOIN fields f ON f.id = NULLIF(agg.grp_field, -1)
+    -- fallback "from"/"to" for deletes/adds (no live field pair to compare)
     JOIN LATERAL (
         SELECT e.old_value FROM edit_log e
         WHERE e.document_id = agg.document_id
@@ -1781,8 +1810,7 @@ _NET_CHANGES_CTE = f"""
           AND e.action = agg.action
         ORDER BY e.ts DESC LIMIT 1
     ) lv ON TRUE
-    LEFT JOIN fields f ON f.id = NULLIF(agg.grp_field, -1)
-    WHERE COALESCE(fv.old_value, '') <> COALESCE(lv.new_value, '')
+    WHERE COALESCE({_FROM_VALUE_SQL}, '') <> COALESCE({_TO_VALUE_SQL}, '')
 """
 
 

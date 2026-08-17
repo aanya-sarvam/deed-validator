@@ -918,17 +918,15 @@ function closeModal() { $('modal-root').innerHTML = ''; }
 /* ---------- vertex batch: field-changes drill-down ---------- */
 let VERTEX_CHANGES = [];
 
-// Render one side of a before/after cell with clear empty/added/removed
-// semantics rather than a raw blank:
-//   • value present            -> the text
-//   • empty on the "From" side  -> "(was empty)"  (i.e. this was newly filled)
-//   • empty on the "To" side    -> "(cleared)"    (i.e. field was emptied)
+// Render one side of a before/after cell literally: show exactly what was in
+// the box. If the box was empty, say so plainly ("(nothing)") rather than
+// leaving a blank cell that reads as missing data.
+//   • value present -> the text as displayed / as typed
+//   • empty          -> "(nothing)"
 function fmtChangeVal(val, side) {
   const v = (val == null ? '' : String(val)).trim();
   if (v) return escHtml(v);
-  return side === 'from'
-    ? '<span style="color:var(--muted);font-style:italic">(was empty)</span>'
-    : '<span style="color:var(--muted);font-style:italic">(cleared)</span>';
+  return '<span style="color:var(--muted);font-style:italic">(nothing)</span>';
 }
 
 async function showVertexChangeDetail(i) {
