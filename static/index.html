@@ -402,6 +402,7 @@
       <div class="grp" id="batch-grp">Batch
         <select id="f_source" onchange="runSearch(1)">
           <option value="">All</option>
+          <option value="completed_1k">Completed-1k batch</option>
           <option value="vertex">Mismatch batch</option>
           <option value="classification">Existing corpus</option>
         </select>
@@ -916,8 +917,9 @@ async function showHistory(docId) {
 }
 function closeModal() { $('modal-root').innerHTML = ''; }
 
-/* ---------- vertex batch: field-changes drill-down ---------- */
-let VERTEX_CHANGES = [];
+/* ---------- batch field-changes drill-down (vertex + completed_1k) ---------- */
+let BATCH_CHANGES = [];
+let BATCH_CHANGES_SOURCE = 'vertex'; // 'vertex' | 'completed_1k'
 
 // Render one side of a before/after cell literally: show exactly what was in
 // the box. If the box was empty, say so plainly ("(nothing)") rather than
@@ -930,14 +932,22 @@ function fmtChangeVal(val, side) {
   return '<span style="color:var(--muted);font-style:italic">(nothing)</span>';
 }
 
-async function showVertexChangeDetail(i) {
-  const c = VERTEX_CHANGES[i];
+function batchChangesApiBase() {
+  return BATCH_CHANGES_SOURCE === 'completed_1k'
+    ? '/admin/completed1k-changes' : '/admin/vertex-changes';
+}
+
+async function showBatchChangeDetail(i) {
+  const c = BATCH_CHANGES[i];
   if (!c) return;
   let rows;
   try {
-    rows = await api(`/admin/vertex-changes/detail?section=${encodeURIComponent(c.section)}`
-      + `&label=${encodeURIComponent(c.label)}&action=${encodeURIComponent(c.action)}`
-      + `&group=${encodeURIComponent(VERTEX_GROUP)}`);
+    let url = `${batchChangesApiBase()}/detail?section=${encodeURIComponent(c.section)}`
+      + `&label=${encodeURIComponent(c.label)}&action=${encodeURIComponent(c.action)}`;
+    if (BATCH_CHANGES_SOURCE === 'vertex') {
+      url += `&group=${encodeURIComponent(VERTEX_GROUP)}`;
+    }
+    rows = await api(url);
   } catch (e) { alert(e.message); return; }
   const body = rows.length ? rows.map(r => {
     const fromEmpty = !(r.old_value || '').trim(), toEmpty = !(r.new_value || '').trim();
@@ -959,6 +969,12 @@ async function showVertexChangeDetail(i) {
         <th>From</th><th>To</th></tr></thead><tbody>${body}</tbody></table>
       <p style="margin-top:14px"><button onclick="closeModal()">Close</button></p>
     </div></div>`;
+}
+
+// Back-compat alias used by older onclick handlers if any linger in cache.
+async function showVertexChangeDetail(i) {
+  BATCH_CHANGES_SOURCE = 'vertex';
+  return showBatchChangeDetail(i);
 }
 
 /* ---------- validate ---------- */
@@ -2443,8 +2459,9 @@ async function loadVertexBatchDashboardTemp() {
   }
   let changesBlock = '';
   if (changes && changes.length) {
-    VERTEX_CHANGES = changes;
-    const changeRows = changes.map((c, i) => `<tr style="cursor:pointer" onclick="showVertexChangeDetail(${i})">
+    BATCH_CHANGES = changes;
+    BATCH_CHANGES_SOURCE = 'vertex';
+    const changeRows = changes.map((c, i) => `<tr style="cursor:pointer" onclick="showBatchChangeDetail(${i})">
         <td>${escHtml(c.section)}</td><td>${escHtml(c.label)}</td>
         <td>${escHtml(c.action_label)}</td><td>${c.change_count}</td>
         <td>${c.doc_count}</td><td>${c.last_change}</td></tr>`).join('');
@@ -2470,7 +2487,10 @@ async function loadVertexBatchDashboardTemp() {
 
 
 async function loadCompleted1kDashboardTemp() {
-  const mm = await api('/admin/completed1k-progress').catch(() => null);
+  const [mm, changes] = await Promise.all([
+    api('/admin/completed1k-progress').catch(() => null),
+    api('/admin/completed1k-changes/summary').catch(() => null),
+  ]);
   let mmBlock = '<p style="color:var(--muted)">No batch data yet — run completed-1k ingest first.</p>';
   if (mm && mm.total) {
     const pctDone = mm.total ? Math.round(mm.done / mm.total * 100) : 0;
@@ -2494,6 +2514,23 @@ async function loadCompleted1kDashboardTemp() {
         <th>Validated</th><th>Corrected</th><th>Correction rate</th></tr></thead>
         <tbody>${rows}</tbody></table>`;
   }
+  let changesBlock = '';
+  if (changes && changes.length) {
+    BATCH_CHANGES = changes;
+    BATCH_CHANGES_SOURCE = 'completed_1k';
+    const changeRows = changes.map((c, i) => `<tr style="cursor:pointer" onclick="showBatchChangeDetail(${i})">
+        <td>${escHtml(c.section)}</td><td>${escHtml(c.label)}</td>
+        <td>${escHtml(c.action_label)}</td><td>${c.change_count}</td>
+        <td>${c.doc_count}</td><td>${c.last_change}</td></tr>`).join('');
+    changesBlock = `<h2>Field changes in this batch</h2>
+      <p style="color:var(--muted);font-size:0.8333rem">Every field correction, addition, or deletion made across the
+        completed-1k batch, grouped by field and change type. Click a row to see before/after values.</p>
+      <table class="stats"><thead><tr><th>Section</th><th>Field</th><th>Change type</th>
+        <th># changes</th><th># deeds</th><th>Last change</th></tr></thead>
+        <tbody>${changeRows}</tbody></table>`;
+  } else if (changes) {
+    changesBlock = '<h2>Field changes in this batch</h2><p style="color:var(--muted)">No changes recorded for this batch yet.</p>';
+  }
   $('progress').innerHTML = `
     <h1>Dashboard</h1>
     <p style="color:var(--muted);font-size:0.9rem;margin-top:-8px">
@@ -2501,6 +2538,7 @@ async function loadCompleted1kDashboardTemp() {
       for the older mismatch cohort.</p>
     <h2>Completed-1k batch</h2>
     ${mmBlock}
+    ${changesBlock}
     <h2>Data ingestion</h2>
     <p id="ri_status" style="color:var(--muted)">Loads only the completed-1k deeds (skips the heavy orissa_deeds pass that can 502 on Render).</p>
     <p><button class="primary" onclick="doReingestCompleted1k()">Ingest completed-1k deeds</button>

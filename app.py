@@ -809,8 +809,8 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
         where.append("d.has_api_mismatch = TRUE")
     elif mismatches in ("0", "false", "no"):
         where.append("d.has_api_mismatch = FALSE")
-    # source filter → view the vertex mismatch batch apart from the existing corpus
-    if source in ("vertex", "classification"):
+    # source filter → view a batch apart from the rest of the corpus
+    if source in ("vertex", "classification", "completed_1k"):
         where.append("d.source = %s"); params.append(source)
     if book.isdigit():
         where.append("(d.api_book_no = %s OR d.book_no = %s)"); params.extend(
@@ -1861,20 +1861,21 @@ _LABEL_EXPR = "COALESCE(f.label, 'Item')"
 #
 # Also supports the mismatch(502) vs control(500) split via vertex_group
 # (see tag_vertex_groups.py) — %(group)s is 'all' / 'mismatch' / 'control'.
-# This is purely a reporting filter, layered on top of source='vertex'; it
-# has no bearing on is_priority or the validation queue.
+# This is purely a reporting filter, layered on top of source='vertex' (or
+# another batch source via %(source)s); it has no bearing on is_priority or
+# the validation queue.
 _DONE_STATES_SQL = "('validated','reviewed','in_monitor_review')"
-# The whole report is vertex-batch-only. For that batch the two boxes are:
+# For the vertex + completed_1k batches the two boxes are:
 #   English box (hidden)  = original IGR metadata — NEVER edited, ignore it.
-#   Odia box (visible)    = Gemini's extraction, which experts verify/correct.
-# So a change is ALWAYS the Odia box: before = Gemini's extraction (the
-# immutable original in src_block->>'odia_text'), after = odia_value (what the
-# expert corrected it to). No English fallback — surfacing the untouched IGR
-# metadata as a "before/after" would be wrong here. add/delete kinds have no
-# box pair, so they fall back to the edit_log first-old / last-new values.
+#   Odia box (visible)    = model extraction, which experts verify/correct.
+# So a change is ALWAYS the Odia box: before = original in
+# src_block->>'odia_text', after = odia_value. No English fallback —
+# surfacing the untouched IGR metadata as a "before/after" would be wrong
+# here. add/delete kinds have no box pair, so they fall back to the
+# edit_log first-old / last-new values.
 _ODIA_ORIG = "COALESCE(f.src_block->>'odia_text', '')"
 _ODIA_NOW  = "COALESCE(f.odia_value, '')"
-# "From": Gemini's original Odia-box extraction; edit_log fallback for add/delete.
+# "From": model's original Odia-box extraction; edit_log fallback for add/delete.
 _FROM_VALUE_SQL = f"""
     CASE
         WHEN agg.kind = 'corrected' AND f.id IS NOT NULL THEN {_ODIA_ORIG}
@@ -1886,6 +1887,8 @@ _TO_VALUE_SQL = f"""
         WHEN agg.kind = 'corrected' AND f.id IS NOT NULL THEN {_ODIA_NOW}
         ELSE lv.new_value
     END"""
+# Parameterized by %(source)s and %(group)s. For non-vertex batches pass
+# group='all' so the vertex_group clause is a no-op.
 _NET_CHANGES_CTE = f"""
     SELECT
         agg.document_id, agg.grp_field, agg.kind AS action,
@@ -1898,7 +1901,7 @@ _NET_CHANGES_CTE = f"""
                MIN(e.ts) AS first_ts, MAX(e.ts) AS last_ts, COUNT(*) AS raw_count
         FROM edit_log e
         JOIN documents d ON d.id = e.document_id
-        WHERE d.source = 'vertex' AND e.action = ANY(%(actions)s)
+        WHERE d.source = %(source)s AND e.action = ANY(%(actions)s)
           AND d.status IN {_DONE_STATES_SQL}
           AND (%(group)s = 'all' OR d.vertex_group = %(group)s)
         GROUP BY e.document_id, COALESCE(e.field_id, -1), {ACTION_KIND_SQL}
@@ -1923,6 +1926,52 @@ _NET_CHANGES_CTE = f"""
 """
 
 
+def _batch_changes_summary(source, group="all"):
+    q = ("WITH net AS (" + _NET_CHANGES_CTE + ") "
+         "SELECT section, label, action, COUNT(*) AS change_count, "
+         "       COUNT(DISTINCT document_id) AS doc_count, "
+         "       MAX(last_ts) AS last_change "
+         "FROM net GROUP BY section, label, action "
+         "ORDER BY change_count DESC")
+    with connect() as con:
+        rows = con.execute(q, {"actions": list(FIELD_CHANGE_ACTIONS),
+                                "group": group, "source": source}).fetchall()
+    out = []
+    for r in rows:
+        r = dict(r)
+        r["action_label"] = ACTION_LABELS.get(r["action"], r["action"])
+        r["last_change"] = str(r["last_change"])[:19]
+        out.append(r)
+    return out
+
+
+def _batch_changes_detail(source, section, label, action, group="all"):
+    q = ("WITH net AS (" + _NET_CHANGES_CTE + ") "
+         "SELECT n.document_id AS doc_id, n.old_value, n.new_value, "
+         "       n.last_ts AS ts, n.first_ts, n.raw_count, "
+         "       d.deed_number, "
+         "       (SELECT u.full_name FROM edit_log e2 JOIN users u ON u.id = e2.user_id "
+         "        WHERE e2.document_id = n.document_id "
+         "          AND (CASE WHEN e2.action IN ('edit','edit_odia') THEN 'corrected' ELSE e2.action END) = n.action "
+         "          AND COALESCE(e2.field_id, -1) = n.grp_field "
+         "        ORDER BY e2.ts DESC LIMIT 1) AS by_name "
+         "FROM net n JOIN documents d ON d.id = n.document_id "
+         "WHERE n.section = %(section)s AND n.label = %(label)s AND n.action = %(action)s "
+         "ORDER BY n.last_ts DESC")
+    with connect() as con:
+        rows = con.execute(q, {"actions": list(FIELD_CHANGE_ACTIONS),
+                                "section": section, "label": label,
+                                "action": action, "group": group,
+                                "source": source}).fetchall()
+    out = []
+    for r in rows:
+        r = dict(r)
+        r["ts"] = str(r["ts"])[:19]
+        r.pop("first_ts", None)
+        out.append(r)
+    return out
+
+
 @app.get("/api/admin/vertex-changes/summary")
 def vertex_changes_summary(group: str = "all", user=Depends(require_admin)):
     """One row per (section, field, change-type) across the vertex batch,
@@ -1934,22 +1983,7 @@ def vertex_changes_summary(group: str = "all", user=Depends(require_admin)):
     see vertex_group / tag_vertex_groups.py. Reporting-only split."""
     if group not in ("all", "mismatch", "control"):
         raise HTTPException(400, "group must be 'all', 'mismatch', or 'control'")
-    q = ("WITH net AS (" + _NET_CHANGES_CTE + ") "
-         "SELECT section, label, action, COUNT(*) AS change_count, "
-         "       COUNT(DISTINCT document_id) AS doc_count, "
-         "       MAX(last_ts) AS last_change "
-         "FROM net GROUP BY section, label, action "
-         "ORDER BY change_count DESC")
-    with connect() as con:
-        rows = con.execute(q, {"actions": list(FIELD_CHANGE_ACTIONS),
-                                "group": group}).fetchall()
-    out = []
-    for r in rows:
-        r = dict(r)
-        r["action_label"] = ACTION_LABELS.get(r["action"], r["action"])
-        r["last_change"] = str(r["last_change"])[:19]
-        out.append(r)
-    return out
+    return _batch_changes_summary("vertex", group)
 
 
 @app.get("/api/admin/vertex-changes/detail")
@@ -1966,32 +2000,23 @@ def vertex_changes_detail(section: str, label: str, action: str, group: str = "a
         raise HTTPException(400, "Unknown action")
     if group not in ("all", "mismatch", "control"):
         raise HTTPException(400, "group must be 'all', 'mismatch', or 'control'")
-    # by_name: find who made the final edit in this field's session. n.action is
-    # the coarse kind ('corrected' etc.), so match e2 via the same kind mapping
-    # rather than raw e2.action, and take the latest editor at/around last_ts.
-    q = ("WITH net AS (" + _NET_CHANGES_CTE + ") "
-         "SELECT n.document_id AS doc_id, n.old_value, n.new_value, "
-         "       n.last_ts AS ts, n.first_ts, n.raw_count, "
-         "       d.deed_number, "
-         "       (SELECT u.full_name FROM edit_log e2 JOIN users u ON u.id = e2.user_id "
-         "        WHERE e2.document_id = n.document_id "
-         "          AND (CASE WHEN e2.action IN ('edit','edit_odia') THEN 'corrected' ELSE e2.action END) = n.action "
-         "          AND COALESCE(e2.field_id, -1) = n.grp_field "
-         "        ORDER BY e2.ts DESC LIMIT 1) AS by_name "
-         "FROM net n JOIN documents d ON d.id = n.document_id "
-         "WHERE n.section = %(section)s AND n.label = %(label)s AND n.action = %(action)s "
-         "ORDER BY n.last_ts DESC")
-    with connect() as con:
-        rows = con.execute(q, {"actions": list(FIELD_CHANGE_ACTIONS),
-                                "section": section, "label": label,
-                                "action": action, "group": group}).fetchall()
-    out = []
-    for r in rows:
-        r = dict(r)
-        r["ts"] = str(r["ts"])[:19]
-        r.pop("first_ts", None)
-        out.append(r)
-    return out
+    return _batch_changes_detail("vertex", section, label, action, group)
+
+
+@app.get("/api/admin/completed1k-changes/summary")
+def completed1k_changes_summary(user=Depends(require_admin)):
+    """Field-change summary for the completed_1k batch (same shape as
+    vertex-changes/summary, no mismatch/control split)."""
+    return _batch_changes_summary("completed_1k", "all")
+
+
+@app.get("/api/admin/completed1k-changes/detail")
+def completed1k_changes_detail(section: str, label: str, action: str,
+                                user=Depends(require_admin)):
+    """Drill-down for one completed_1k field-change summary row."""
+    if action not in VALID_CHANGE_KINDS:
+        raise HTTPException(400, "Unknown action")
+    return _batch_changes_detail("completed_1k", section, label, action, "all")
 
 
 class NewUser(BaseModel):
