@@ -105,6 +105,41 @@ CANON_DEED_DETAIL_FIELDS = (
     ("old_reg_no", "Old registration no"),
 )
 
+# Tabular / IGR-API aliases → canonical field id. The Gemini input for a deed
+# is this shape (camelCase); english_value on each grounding field should
+# echo it, but when the model omits a field entirely we still fill the portal
+# box from these so reviewers never see a blank where the source metadata
+# already had a value.
+_TABULAR_SCALAR_ALIASES = {
+    "deed_type": (
+        "deed_type", "deedType", "DeedType", "documentType", "docType",
+        "natureOfDocument", "nature", "documentName",
+    ),
+    "district": (
+        "district", "districtName", "District", "district_name",
+    ),
+    "office": (
+        "office", "sroName", "sro", "registrationOffice", "srOffice",
+        "officeName", "RegistrationOffice", "subRegistrarOffice",
+    ),
+    "registration_date": (
+        "registration_date", "registrationDate", "regDate",
+        "dateOfRegistration", "RegistrationDate",
+    ),
+    "presentation_date": (
+        "presentation_date", "presentationDate", "dateOfPresentation",
+        "PresentationDate",
+    ),
+    "consideration_amount": (
+        "consideration_amount", "considerationAmount", "consideration",
+        "marketValue", "transactionValue", "ConsiderationAmount", "amount",
+    ),
+    "old_reg_no": (
+        "old_reg_no", "oldRegNo", "oldRegNO", "oldRegistrationNo",
+        "previousRegNo", "OldRegNo",
+    ),
+}
+
 
 def _pretty_attr(attr):
     return ATTR_LABELS.get(attr, (attr or "value").replace("_", " ").title())
@@ -243,6 +278,76 @@ def _ensure_consideration_amount(rows, g):
     return rows[:insert_at] + [new_row] + rows[insert_at:]
 
 
+def _tabular_sources(g):
+    """Yield dicts that may hold the original IGR/tabular metadata for a deed.
+
+    Grounding JSONL lines vary: sometimes the camelCase input is at the top
+    level, sometimes under meta/tabular/input/api, sometimes only deed_type
+    survived on the header. We probe all of them."""
+    if not isinstance(g, dict):
+        return
+    yield g
+    for key in ("meta", "tabular", "input", "api", "api_meta", "igr",
+                "raw_meta", "source_meta", "src_meta"):
+        sub = g.get(key)
+        if isinstance(sub, dict):
+            yield sub
+        elif isinstance(sub, str) and sub.strip().startswith("{"):
+            try:
+                parsed = json.loads(sub)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                yield parsed
+
+
+def _scalar_from_tabular(g, field_id):
+    """Pull the english/source value for a canon Deed-details id from tabular
+    metadata on the grounding record (if present)."""
+    aliases = _TABULAR_SCALAR_ALIASES.get(field_id) or (field_id,)
+    for src in _tabular_sources(g):
+        for a in aliases:
+            if a not in src:
+                continue
+            val = src.get(a)
+            if val is None:
+                continue
+            s = str(val).strip()
+            if s and s.lower() not in ("", "-", "na", "n/a", "nil", "none",
+                                       "null", "nan", "others"):
+                return s
+    return ""
+
+
+def _grounding_scalar_map(g):
+    """id → best field dict from g['fields'] for canon deed-detail scalars."""
+    out = {}
+    for f in (g.get("fields") or []) if isinstance(g, dict) else []:
+        if not isinstance(f, dict):
+            continue
+        if f.get("attr"):
+            continue  # party/property sub-attrs
+        fid = (f.get("id") or "").strip()
+        if fid not in dict(CANON_DEED_DETAIL_FIELDS):
+            continue
+        # Prefer found=true, then non-empty odia, then non-empty english.
+        prev = out.get(fid)
+        if prev is None:
+            out[fid] = f
+            continue
+        cand = (bool(f.get("found")),
+                1 if (f.get("odia_text") or "").strip() else 0,
+                1 if (f.get("english_value") or "").strip() else 0,
+                float(f.get("confidence") or 0))
+        old = (bool(prev.get("found")),
+               1 if (prev.get("odia_text") or "").strip() else 0,
+               1 if (prev.get("english_value") or "").strip() else 0,
+               float(prev.get("confidence") or 0))
+        if cand > old:
+            out[fid] = f
+    return out
+
+
 def _deed_detail_field_id(r):
     """Resolve the canonical scalar id for a Deed-details row, if any."""
     sb = r.get("src_block") if isinstance(r.get("src_block"), dict) else {}
@@ -265,21 +370,22 @@ def _deed_detail_field_id(r):
     return None
 
 
-def _ensure_deed_detail_fields(rows):
-    """Guarantee every canonical Deed-details scalar is present.
+def _ensure_deed_detail_fields(rows, g=None):
+    """Guarantee every canonical Deed-details scalar is present AND filled.
 
-    Some grounding exports (notably the completed-1k prompt_v2 merge) only
-    emit fields the model marked found=true, so a deed can land in the portal
-    with just District + Office under Deed details. Party sections already
-    pad missing attrs; this does the same for the scalar template so
-    reviewers always see Deed type / dates / consideration / old reg no
-    (empty boxes when not extracted).
+    Gemini is asked to return every tabular target (found true/false). Some
+    completed-1k merges still drop unfound rows, so a deed can land with only
+    District + Office. We:
+      1. rebuild the Deed-details block in CANON order;
+      2. for any missing/empty box, prefer the grounding field's
+         english_value / odia_text when the model did return it;
+      3. otherwise fill english from the original tabular/IGR metadata on
+         the grounding record (deedType, presentationDate, …) so the portal
+         never shows a blank where the input JSON already had a value.
+    """
+    g = g or {}
+    from_grounding = _grounding_scalar_map(g)
 
-    Also normalizes the office label to 'Registration office' when the
-    source only carried the short 'Office' name.
-
-    Rebuilds the Deed-details block in CANON order, then appends any
-    non-canonical Deed-details rows, then the party/other sections."""
     deed_rows, other_rows = [], []
     for r in rows:
         if r.get("section") == "Deed details":
@@ -301,22 +407,57 @@ def _ensure_deed_detail_fields(rows):
             by_id[fid] = r
         elif not fid:
             extras.append(r)
-        # duplicate canon id → keep first, drop later copies
 
     rebuilt = []
     for cid, clabel in CANON_DEED_DETAIL_FIELDS:
+        gf = from_grounding.get(cid) or {}
+        tab_en = _scalar_from_tabular(g, cid)
         if cid in by_id:
-            rebuilt.append(by_id[cid])
+            r = dict(by_id[cid])
+            # Fill empty english/odia from grounding field or tabular meta —
+            # never wipe a value the reviewer / model already put there.
+            if not (r.get("english") or "").strip():
+                r["english"] = (gf.get("english_value") or tab_en or "")
+            if not (r.get("odia") or "").strip():
+                r["odia"] = (gf.get("odia_text") or "")
+            # Keep odia in sync with latin dates/amounts when model left odia
+            # empty but english carries the same digits (common for dates).
+            if not (r.get("odia") or "").strip() and (r.get("english") or "").strip():
+                # Only copy for date/amount/reg-no style fields — not names.
+                if cid in ("registration_date", "presentation_date",
+                           "consideration_amount", "old_reg_no"):
+                    r["odia"] = r["english"]
+            sb = r.get("src_block") if isinstance(r.get("src_block"), dict) else {}
+            if sb is not None and gf:
+                # Prefer richer src_block from grounding when we only had a pad.
+                if sb.get("auto_padded") or sb.get("auto_defaulted"):
+                    merged_sb = {**gf, "id": cid, "field": gf.get("field") or clabel}
+                    r["src_block"] = merged_sb
+            rebuilt.append(r)
         else:
+            eng = (gf.get("english_value") or tab_en or "")
+            odia = (gf.get("odia_text") or "")
+            if not odia and eng and cid in ("registration_date", "presentation_date",
+                                            "consideration_amount", "old_reg_no"):
+                odia = eng
+            sb = dict(gf) if gf else {
+                "id": cid, "field": clabel, "attr": "", "item_index": 0,
+                "found": False, "auto_padded": True,
+            }
+            sb.setdefault("id", cid)
+            sb.setdefault("field", clabel)
+            if not gf:
+                sb["auto_padded"] = True
+            if tab_en and not gf:
+                sb["english_value"] = tab_en
+                sb["from_tabular"] = True
             rebuilt.append({
                 "section": "Deed details",
                 "label": clabel,
-                "english": "",
-                "odia": "",
-                "src_block": {"id": cid, "field": clabel, "attr": "",
-                              "item_index": 0, "found": False,
-                              "auto_padded": True},
-                "page": None,
+                "english": eng,
+                "odia": odia,
+                "src_block": sb,
+                "page": gf.get("page"),
             })
     return rebuilt + extras + other_rows
 
@@ -502,7 +643,7 @@ def _insert_from_grounding(con, g, full_text, pdf_name, source="classification")
          json.dumps(src_meta), source)).fetchone()["id"]
     rows = []
     field_rows = _ensure_consideration_amount(
-        _ensure_deed_detail_fields(_build_field_rows(g.get("fields", []))), g)
+        _ensure_deed_detail_fields(_build_field_rows(g.get("fields", [])), g), g)
     for i, r in enumerate(field_rows):
         rows.append((doc_id, r["section"], r["label"], r["english"], r["english"],
                      r["odia"], len(r["english"]) > 60, i, "text",
@@ -1308,12 +1449,23 @@ def backfill_deed_detail_fields(con):
                 g = json.loads(sm)
             g.setdefault("deed_type", meta["deed_type"])
         for j, (cid, clabel) in enumerate(to_add):
-            english = odia = ""
+            # Prefer tabular/IGR english on src_meta so padded boxes aren't blank
+            # when the input JSON already had the value (deedType, etc.).
+            english = _scalar_from_tabular(g, cid)
+            odia = ""
             sb = {"id": cid, "field": clabel, "attr": "", "item_index": 0,
                   "found": False, "auto_padded": True}
-            if cid == "consideration_amount" and _needs_consideration(g):
+            if english:
+                sb["english_value"] = english
+                sb["from_tabular"] = True
+            if cid == "consideration_amount" and not english and _needs_consideration(g):
                 english = odia = "0"
                 sb["auto_defaulted"] = True
+            elif english and cid in ("registration_date", "presentation_date",
+                                     "consideration_amount", "old_reg_no"):
+                # Latin dates/amounts: seed Odia box with the same digits so
+                # the visible field isn't empty when Gemini omitted the row.
+                odia = english
             con.execute(
                 "INSERT INTO fields (document_id, section, label, ocr_value, "
                 "current_value, odia_value, multiline, position, field_kind, "
@@ -1330,3 +1482,153 @@ def backfill_deed_detail_fields(con):
         print(f"[deed-detail-backfill] renamed {renamed} 'Office' → "
               f"'Registration office'", flush=True)
     return touched
+
+
+def sync_deed_details_from_completed1k(con=None, progress=None):
+    """Re-read the completed-1k grounding JSONL and fill any Deed-details
+    fields that are missing or still empty in the DB.
+
+    Use when Gemini/tabular had the values but an earlier ingest only kept
+    found=true rows (District/Office only). For each JSONL line we:
+      - take english/odia from the grounding fields array when present;
+      - else fall back to camelCase tabular keys on the same record
+        (deedType, presentationDate, considerationAmount, oldRegNO, …);
+      - INSERT missing field rows or UPDATE empty current_value/odia_value
+        (never overwrite a non-empty expert correction).
+
+    Returns {docs_touched, fields_inserted, fields_updated}."""
+    import gcs_store
+    own_con = con is None
+    if own_con:
+        con = connect()
+    stats = {"docs_touched": 0, "fields_inserted": 0, "fields_updated": 0}
+    if not gcs_store.vertex_enabled():
+        print("[deed-detail-sync] GCS_VERTEX_BUCKET not set — skipping", flush=True)
+        if own_con:
+            con.close()
+        return stats
+    gpath = os.environ.get("GCS_COMPLETED1K_GROUNDING",
+                           "outputs/merged/grounding_results_vx_v2_1k.jsonl")
+    print(f"[deed-detail-sync] reading {gpath}", flush=True)
+    graw = gcs_store.read_text_abs(gpath, source="vertex")
+    if not graw:
+        print(f"[deed-detail-sync] grounding file not found at {gpath}", flush=True)
+        if own_con:
+            con.close()
+        return stats
+
+    by_reg = {r["deed_number"]: r["id"] for r in con.execute(
+        "SELECT id, deed_number FROM documents WHERE source='completed_1k'"
+    ).fetchall()}
+    if not by_reg:
+        print("[deed-detail-sync] no completed_1k documents in DB", flush=True)
+        if own_con:
+            con.close()
+        return stats
+
+    lines = [l for l in graw.splitlines() if l.strip()]
+    for n, line in enumerate(lines, 1):
+        try:
+            g = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        reg_no = str(g.get("reg_no") or g.get("key") or
+                     g.get("registration_no") or g.get("registrationNo") or "").strip()
+        doc_id = by_reg.get(reg_no)
+        if not doc_id:
+            continue
+
+        # Build the desired deed-detail rows from this grounding record.
+        desired = _ensure_deed_detail_fields([], g)
+        desired = _ensure_consideration_amount(desired, g)
+        desired = [r for r in desired if r.get("section") == "Deed details"]
+        if not desired:
+            continue
+
+        existing = con.execute(
+            "SELECT id, label, layout_tag, src_block, current_value, odia_value, "
+            "ocr_value, position FROM fields "
+            "WHERE document_id=%s AND section='Deed details' ORDER BY position",
+            (doc_id,)).fetchall()
+        have = {}
+        for r in existing:
+            sb = r["src_block"]
+            if isinstance(sb, str):
+                sb = json.loads(sb)
+            fake = {"label": r["label"], "layout_tag": r["layout_tag"],
+                    "src_block": sb if isinstance(sb, dict) else {}}
+            fid = _deed_detail_field_id(fake)
+            if fid:
+                have[fid] = r
+
+        doc_changed = False
+        end_pos = con.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM fields "
+            "WHERE document_id=%s AND section='Deed details'",
+            (doc_id,)).fetchone()["p"]
+
+        for r in desired:
+            cid = _deed_detail_field_id(r)
+            if not cid:
+                continue
+            eng = (r.get("english") or "").strip()
+            odia = (r.get("odia") or "").strip()
+            if cid in have:
+                cur = have[cid]
+                sets, params = [], []
+                # Only fill empties — never clobber expert edits.
+                if eng and not (cur["current_value"] or "").strip():
+                    sets.append("current_value=%s")
+                    params.append(eng)
+                    if not (cur["ocr_value"] or "").strip():
+                        sets.append("ocr_value=%s")
+                        params.append(eng)
+                if odia and not (cur["odia_value"] or "").strip():
+                    sets.append("odia_value=%s")
+                    params.append(odia)
+                if (cur["label"] or "").strip().lower() == "office":
+                    sets.append("label=%s")
+                    params.append("Registration office")
+                if sets:
+                    params.append(cur["id"])
+                    con.execute(
+                        f"UPDATE fields SET {', '.join(sets)} WHERE id=%s", params)
+                    stats["fields_updated"] += 1
+                    doc_changed = True
+            else:
+                if not eng and not odia:
+                    # Still insert the empty template so the box appears;
+                    # consideration default handled by _ensure_consideration_amount.
+                    pass
+                sb = r.get("src_block") if isinstance(r.get("src_block"), dict) else {
+                    "id": cid, "field": r["label"], "auto_padded": True}
+                con.execute(
+                    "UPDATE fields SET position = position + 1 "
+                    "WHERE document_id=%s AND position >= %s",
+                    (doc_id, end_pos))
+                con.execute(
+                    "INSERT INTO fields (document_id, section, label, ocr_value, "
+                    "current_value, odia_value, multiline, position, field_kind, "
+                    "layout_tag, src_block, page_num) "
+                    "VALUES (%s,'Deed details',%s,%s,%s,%s,false,%s,'text',%s,%s,NULL)",
+                    (doc_id, r["label"], eng, eng, odia, end_pos, cid,
+                     json.dumps(sb)))
+                end_pos += 1
+                stats["fields_inserted"] += 1
+                doc_changed = True
+
+        if doc_changed:
+            stats["docs_touched"] += 1
+        if progress and n % 50 == 0:
+            progress(n, len(lines), stats["docs_touched"])
+        if n % 100 == 0:
+            con.commit()
+            print(f"[deed-detail-sync] {n}/{len(lines)} "
+                  f"({stats['docs_touched']} docs, "
+                  f"+{stats['fields_inserted']} / ~{stats['fields_updated']})",
+                  flush=True)
+    con.commit()
+    print(f"[deed-detail-sync] done: {stats}", flush=True)
+    if own_con:
+        con.close()
+    return stats

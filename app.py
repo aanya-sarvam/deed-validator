@@ -137,6 +137,15 @@ def _auto_ingest():
                     bdd = backfill_deed_detail_fields(con)
                     if bdd:
                         print(f"[startup] padded Deed-details fields on {bdd} documents", flush=True)
+                    import gcs_store as _gcs_boot
+                    if _gcs_boot.vertex_enabled():
+                        from ingest_json import sync_deed_details_from_completed1k
+                        syn = sync_deed_details_from_completed1k(con)
+                        if syn.get("docs_touched"):
+                            print(f"[startup] synced Deed-details from completed-1k "
+                                  f"JSONL on {syn['docs_touched']} docs "
+                                  f"(+{syn['fields_inserted']}/~{syn['fields_updated']})",
+                                  flush=True)
                     _ingest_status.update(state="done", documents=n, detail="already loaded")
                     _repair_scans(con)
                     print(f"[startup] already loaded — {n} documents", flush=True)
@@ -288,10 +297,15 @@ def _run_incremental_ingest(include_raw=False, only=None):
 
         # Light vertex-bucket batches first so a later OOM can't block them.
         if gcs_store.vertex_enabled() and (do_all or only == "completed_1k"):
-            from ingest_json import ingest_gcs_completed_1k
+            from ingest_json import ingest_gcs_completed_1k, sync_deed_details_from_completed1k
             _progress("checking completed-1k deeds on GCS")
             print("[reingest] checking completed-1k deeds on GCS...", flush=True)
             ingest_gcs_completed_1k(init=False, progress=_gcs_raw_progress)
+            # Fill Deed-details that an earlier ingest left blank (found=true-only
+            # rows) from the same JSONL + tabular aliases on each record.
+            _progress("syncing completed-1k Deed-details from grounding JSONL")
+            print("[reingest] syncing completed-1k Deed-details...", flush=True)
+            sync_deed_details_from_completed1k(progress=_gcs_raw_progress)
 
         if gcs_store.vertex_enabled() and do_all:
             from ingest_json import ingest_gcs_vertex
@@ -360,6 +374,34 @@ def admin_reingest_completed1k(user=Depends(require_admin)):
     ).start()
     return {"ok": True,
             "message": "Completed-1k ingestion started — check /api/ingest-status"}
+
+
+@app.post("/api/admin/sync-completed1k-deed-details")
+def admin_sync_completed1k_deed_details(user=Depends(require_admin)):
+    """Fill missing/empty Deed-details on already-ingested completed_1k deeds
+    from the grounding JSONL (Gemini fields + tabular aliases like deedType).
+    Safe: never overwrites non-empty values."""
+    def _run():
+        try:
+            _ingest_status.update(state="running",
+                                  detail="syncing completed-1k Deed-details")
+            from ingest_json import sync_deed_details_from_completed1k
+            syn = sync_deed_details_from_completed1k()
+            with connect() as con:
+                n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+            _ingest_status.update(
+                state="done", documents=n,
+                detail=(f"deed-detail sync: {syn.get('docs_touched', 0)} docs, "
+                        f"+{syn.get('fields_inserted', 0)} / "
+                        f"~{syn.get('fields_updated', 0)}"))
+        except Exception as e:
+            _ingest_status.update(state="error", detail=str(e))
+            import traceback
+            traceback.print_exc()
+    import threading
+    threading.Thread(target=_run, daemon=True).start()
+    return {"ok": True,
+            "message": "Deed-details sync started — check /api/ingest-status"}
 
 
 @app.post("/api/admin/backfill-priority-rank")
