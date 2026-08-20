@@ -90,6 +90,21 @@ ATTR_LABELS = {
     "village": "Village", "khata": "Khata", "plot": "Plot", "area": "Area",
 }
 
+# Scalar Deed-details fields that must ALWAYS appear in the portal, even when
+# grounding omitted them (model didn't find them / merge only kept found=true
+# rows). Mirrors the always-shown party template (Name / Address / …). Order
+# is the display order under Deed details. Labels match the usual grounding
+# `field` strings so export/src_block stay consistent.
+CANON_DEED_DETAIL_FIELDS = (
+    ("deed_type", "Deed type"),
+    ("district", "District"),
+    ("office", "Registration office"),
+    ("registration_date", "Registration date"),
+    ("presentation_date", "Presentation date"),
+    ("consideration_amount", "Consideration Amount"),
+    ("old_reg_no", "Old registration no"),
+)
+
 
 def _pretty_attr(attr):
     return ATTR_LABELS.get(attr, (attr or "value").replace("_", " ").title())
@@ -187,10 +202,25 @@ def _ensure_consideration_amount(rows, g):
     the viewer, since the frontend starts a new section every time the
     section name changes while walking fields in position order; and even
     appending at the end of just the Deed details block still didn't match
-    where this field naturally belongs relative to its neighbors."""
+    where this field naturally belongs relative to its neighbors.
+
+    Also upgrades an empty auto-padded consideration row (from
+    _ensure_deed_detail_fields) to the Book-1 default of '0'."""
     if not _needs_consideration(g):
         return rows
-    if any("consideration" in (r.get("label") or "").lower() for r in rows):
+    for r in rows:
+        if "consideration" not in (r.get("label") or "").lower():
+            continue
+        # Already have a real or defaulted value — leave it.
+        if (r.get("english") or "").strip() or (r.get("odia") or "").strip():
+            return rows
+        sb = r.get("src_block") if isinstance(r.get("src_block"), dict) else {}
+        if sb.get("auto_defaulted") or sb.get("auto_padded"):
+            r["english"] = "0"
+            r["odia"] = "0"
+            sb = {**sb, "auto_defaulted": True, "id": "consideration_amount",
+                  "field": "Consideration Amount"}
+            r["src_block"] = sb
         return rows
     new_row = {
         "section": "Deed details",
@@ -211,6 +241,84 @@ def _ensure_consideration_amount(rows, g):
             if r.get("section") == "Deed details":
                 insert_at = i + 1
     return rows[:insert_at] + [new_row] + rows[insert_at:]
+
+
+def _deed_detail_field_id(r):
+    """Resolve the canonical scalar id for a Deed-details row, if any."""
+    sb = r.get("src_block") if isinstance(r.get("src_block"), dict) else {}
+    if sb.get("group") or sb.get("per_item"):
+        return None
+    fid = (sb.get("id") or r.get("layout_tag") or "").strip()
+    if fid in dict(CANON_DEED_DETAIL_FIELDS):
+        return fid
+    # Fallback: match by label (handles older rows / short "Office" label).
+    lab = (r.get("label") or "").strip().lower()
+    for cid, clabel in CANON_DEED_DETAIL_FIELDS:
+        if lab == clabel.lower() or lab == cid.replace("_", " "):
+            return cid
+        if cid == "office" and lab in ("office", "registration office", "sr office"):
+            return cid
+        if cid == "old_reg_no" and "old reg" in lab:
+            return cid
+        if cid == "consideration_amount" and "consideration" in lab:
+            return cid
+    return None
+
+
+def _ensure_deed_detail_fields(rows):
+    """Guarantee every canonical Deed-details scalar is present.
+
+    Some grounding exports (notably the completed-1k prompt_v2 merge) only
+    emit fields the model marked found=true, so a deed can land in the portal
+    with just District + Office under Deed details. Party sections already
+    pad missing attrs; this does the same for the scalar template so
+    reviewers always see Deed type / dates / consideration / old reg no
+    (empty boxes when not extracted).
+
+    Also normalizes the office label to 'Registration office' when the
+    source only carried the short 'Office' name.
+
+    Rebuilds the Deed-details block in CANON order, then appends any
+    non-canonical Deed-details rows, then the party/other sections."""
+    deed_rows, other_rows = [], []
+    for r in rows:
+        if r.get("section") == "Deed details":
+            deed_rows.append(r)
+        else:
+            other_rows.append(r)
+
+    by_id = {}
+    extras = []
+    for r in deed_rows:
+        fid = _deed_detail_field_id(r)
+        if fid and fid not in by_id:
+            if fid == "office" and (r.get("label") or "").strip().lower() == "office":
+                r = {**r, "label": "Registration office"}
+                sb = r.get("src_block") if isinstance(r.get("src_block"), dict) else {}
+                if sb:
+                    r["src_block"] = {**sb, "field": "Registration office",
+                                      "id": sb.get("id") or "office"}
+            by_id[fid] = r
+        elif not fid:
+            extras.append(r)
+        # duplicate canon id → keep first, drop later copies
+
+    rebuilt = []
+    for cid, clabel in CANON_DEED_DETAIL_FIELDS:
+        if cid in by_id:
+            rebuilt.append(by_id[cid])
+        else:
+            rebuilt.append({
+                "section": "Deed details",
+                "label": clabel,
+                "english": "",
+                "odia": "",
+                "src_block": {"id": cid, "field": clabel, "attr": "",
+                              "item_index": 0, "found": False,
+                              "auto_padded": True},
+                "page": None,
+            })
+    return rebuilt + extras + other_rows
 
 
 def _build_field_rows(fields):
@@ -393,7 +501,8 @@ def _insert_from_grounding(con, g, full_text, pdf_name, source="classification")
          "ready" if full_text else "not_started",
          json.dumps(src_meta), source)).fetchone()["id"]
     rows = []
-    field_rows = _ensure_consideration_amount(_build_field_rows(g.get("fields", [])), g)
+    field_rows = _ensure_consideration_amount(
+        _ensure_deed_detail_fields(_build_field_rows(g.get("fields", []))), g)
     for i, r in enumerate(field_rows):
         rows.append((doc_id, r["section"], r["label"], r["english"], r["english"],
                      r["odia"], len(r["english"]) > 60, i, "text",
@@ -1103,3 +1212,121 @@ def reposition_consideration_amount(con):
             print(f"[consideration-reposition] {i}/{len(to_fix)} fixed...", flush=True)
     con.commit()
     return len(to_fix)
+
+
+def backfill_deed_detail_fields(con):
+    """Pad already-ingested documents that are missing canonical Deed-details
+    scalars (Deed type, dates, consideration, old reg no, …). Same rule as
+    _ensure_deed_detail_fields at ingest — needed because completed-1k (and
+    some earlier batches) only stored found=true fields.
+
+    SQL-scoped to documents that are actually missing at least one canon id,
+    so later boots are a near-no-op. Also renames short 'Office' labels to
+    'Registration office'. Returns number of documents touched."""
+    canon_ids = [cid for cid, _ in CANON_DEED_DETAIL_FIELDS]
+    missing_docs = con.execute(
+        """
+        SELECT d.id
+        FROM documents d
+        WHERE EXISTS (SELECT 1 FROM fields f WHERE f.document_id = d.id)
+          AND EXISTS (
+            SELECT 1 FROM unnest(%s::text[]) AS need(id)
+            WHERE NOT EXISTS (
+              SELECT 1 FROM fields f
+              WHERE f.document_id = d.id
+                AND f.section = 'Deed details'
+                AND NOT COALESCE((f.src_block ? 'group'), false)
+                AND (
+                  f.layout_tag = need.id
+                  OR f.src_block->>'id' = need.id
+                  OR (need.id = 'office' AND lower(f.label) IN
+                        ('office','registration office','sr office'))
+                  OR (need.id = 'old_reg_no' AND lower(f.label) LIKE '%%old reg%%')
+                  OR (need.id = 'consideration_amount'
+                      AND lower(f.label) LIKE '%%consideration%%')
+                  OR lower(f.label) = replace(need.id, '_', ' ')
+                )
+            )
+          )
+        """,
+        (canon_ids,)).fetchall()
+
+    renamed = con.execute(
+        """
+        UPDATE fields
+        SET label = 'Registration office',
+            layout_tag = COALESCE(NULLIF(layout_tag, ''), 'office'),
+            src_block = COALESCE(src_block, '{}'::jsonb)
+                         || jsonb_build_object('id', 'office',
+                                               'field', 'Registration office')
+        WHERE section = 'Deed details'
+          AND lower(label) = 'office'
+        """).rowcount
+
+    if not missing_docs and not renamed:
+        return 0
+
+    touched = 0
+    for i, doc in enumerate(missing_docs, 1):
+        doc_id = doc["id"]
+        existing = con.execute(
+            "SELECT id, label, layout_tag, src_block, position FROM fields "
+            "WHERE document_id = %s AND section = 'Deed details' "
+            "ORDER BY position", (doc_id,)).fetchall()
+        have = set()
+        for r in existing:
+            sb = r["src_block"]
+            if isinstance(sb, str):
+                sb = json.loads(sb)
+            fake = {"label": r["label"], "layout_tag": r["layout_tag"],
+                    "src_block": sb if isinstance(sb, dict) else {}}
+            fid = _deed_detail_field_id(fake)
+            if fid:
+                have.add(fid)
+
+        end_pos = con.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM fields "
+            "WHERE document_id = %s AND section = 'Deed details'",
+            (doc_id,)).fetchone()["p"]
+        to_add = [(cid, clabel) for cid, clabel in CANON_DEED_DETAIL_FIELDS
+                  if cid not in have]
+        if not to_add:
+            continue
+        con.execute(
+            "UPDATE fields SET position = position + %s "
+            "WHERE document_id = %s AND position >= %s",
+            (len(to_add), doc_id, end_pos))
+        meta = con.execute(
+            "SELECT deed_type, src_meta FROM documents WHERE id=%s",
+            (doc_id,)).fetchone()
+        g = {}
+        if meta:
+            sm = meta["src_meta"]
+            if isinstance(sm, dict):
+                g = dict(sm)
+            elif sm:
+                g = json.loads(sm)
+            g.setdefault("deed_type", meta["deed_type"])
+        for j, (cid, clabel) in enumerate(to_add):
+            english = odia = ""
+            sb = {"id": cid, "field": clabel, "attr": "", "item_index": 0,
+                  "found": False, "auto_padded": True}
+            if cid == "consideration_amount" and _needs_consideration(g):
+                english = odia = "0"
+                sb["auto_defaulted"] = True
+            con.execute(
+                "INSERT INTO fields (document_id, section, label, ocr_value, "
+                "current_value, odia_value, multiline, position, field_kind, "
+                "layout_tag, src_block, page_num) "
+                "VALUES (%s,'Deed details',%s,%s,%s,%s,false,%s,'text',%s,%s,NULL)",
+                (doc_id, clabel, english, english, odia, end_pos + j, cid,
+                 json.dumps(sb)))
+        touched += 1
+        if i % 200 == 0:
+            con.commit()
+            print(f"[deed-detail-backfill] {i}/{len(missing_docs)} docs...", flush=True)
+    con.commit()
+    if renamed:
+        print(f"[deed-detail-backfill] renamed {renamed} 'Office' → "
+              f"'Registration office'", flush=True)
+    return touched

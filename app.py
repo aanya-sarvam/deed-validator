@@ -133,6 +133,10 @@ def _auto_ingest():
                     mb = migrate_boundaries_into_property(con)
                     if mb:
                         print(f"[startup] moved {mb} plot boundaries into Property cards", flush=True)
+                    from ingest_json import backfill_deed_detail_fields
+                    bdd = backfill_deed_detail_fields(con)
+                    if bdd:
+                        print(f"[startup] padded Deed-details fields on {bdd} documents", flush=True)
                     _ingest_status.update(state="done", documents=n, detail="already loaded")
                     _repair_scans(con)
                     print(f"[startup] already loaded — {n} documents", flush=True)
