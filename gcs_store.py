@@ -64,8 +64,15 @@ def _get_bucket_vertex():
         return _bucket_vertex
     from google.cloud import storage
     from google.oauth2 import service_account
+    creds_file = os.environ.get("GCS_VERTEX_CREDENTIALS_FILE", "").strip()
     creds_json = os.environ.get("GCS_VERTEX_CREDENTIALS_JSON")
-    if creds_json:
+    if creds_file:
+        with open(creds_file, encoding="utf-8") as f:
+            info = json.load(f)
+        creds = service_account.Credentials.from_service_account_info(info)
+        _client_vertex = storage.Client(credentials=creds,
+                                        project=info.get("project_id"))
+    elif creds_json:
         info = json.loads(creds_json)
         creds = service_account.Credentials.from_service_account_info(info)
         _client_vertex = storage.Client(credentials=creds,
