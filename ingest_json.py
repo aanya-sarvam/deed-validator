@@ -1054,6 +1054,8 @@ def migrate_boundaries_into_property(con):
     con.commit()
     return migrated
 
+
+def reposition_consideration_amount(con):
     """One-time repositioning fix for documents already backfilled by an
     EARLIER, buggy version of backfill_book1_consideration /
     _ensure_consideration_amount, which either appended the auto-added
