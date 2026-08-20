@@ -717,6 +717,98 @@ def ingest_gcs_vertex(init=True, progress=None):
     return loaded
 
 
+def ingest_gcs_completed_1k(init=True, progress=None):
+    """Ingest the 999 completed-1k deeds (prompt_v2 rerun over the fully
+    populated 1985-1994 batch-2 cohort) from the SAME vertex bucket/SA as
+    ingest_gcs_vertex, but tagged source='completed_1k' and priority_rank=30
+    so they sort above the mismatch batch. Reads a per-deed grounding JSONL
+    (the merge_local.py output, already in {reg_no, deed_type, fields:[...]}
+    shape) at GCS_COMPLETED1K_GROUNDING. Safe to re-run: existing
+    deed_numbers are skipped."""
+    import gcs_store
+    if not gcs_store.vertex_enabled():
+        print("[completed1k] GCS_VERTEX_BUCKET not set — skipping", flush=True)
+        return 0
+    if init:
+        init_db()
+    gpath = os.environ.get("GCS_COMPLETED1K_GROUNDING",
+                           "outputs/merged/grounding_results_vx_v2_1k.jsonl")
+    print(f"[completed1k] reading grounding from "
+          f"gs://{os.environ.get('GCS_VERTEX_BUCKET')}/{gpath}", flush=True)
+    graw = gcs_store.read_text_abs(gpath, source="vertex")
+    if not graw:
+        print(f"[completed1k] grounding file not found at {gpath}", flush=True)
+        return 0
+
+    import psycopg
+    con = connect()
+    loaded = skipped = failed = 0
+    try:
+        existing = {r["deed_number"] for r in
+                    con.execute("SELECT deed_number FROM documents").fetchall()}
+        lines = [l for l in graw.splitlines() if l.strip()]
+        print(f"[completed1k] {len(lines)} deeds in grounding file "
+              f"({len(existing)} already in DB)", flush=True)
+        for n, line in enumerate(lines, 1):
+            try:
+                g = json.loads(line)
+            except json.JSONDecodeError:
+                failed += 1
+                continue
+            reg_no = str(g.get("reg_no") or "").strip()
+            if not reg_no:
+                failed += 1
+                continue
+            if reg_no in existing:
+                skipped += 1
+                continue
+            for attempt in (1, 2):
+                try:
+                    ok = _insert_from_grounding(con, g, None, f"{reg_no}.pdf",
+                                                source="completed_1k")
+                    if ok:
+                        # rank 30 = above mismatch(20); set right after insert
+                        con.execute("UPDATE documents SET priority_rank = 30 "
+                                    "WHERE deed_number = %s", (reg_no,))
+                        loaded += 1
+                        existing.add(reg_no)
+                    elif ok is False:
+                        skipped += 1
+                    else:
+                        failed += 1
+                    con.commit()
+                    break
+                except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+                    print(f"[completed1k] conn dropped at line {n} ({reg_no}), "
+                          f"reconnect (attempt {attempt}): {e}", flush=True)
+                    try:
+                        con.close()
+                    except Exception:
+                        pass
+                    if attempt == 2:
+                        failed += 1
+                    else:
+                        con = connect()
+                except Exception as e:
+                    try:
+                        con.rollback()
+                    except Exception:
+                        con = connect()
+                    failed += 1
+                    print(f"[completed1k] failed {reg_no}: {e}", flush=True)
+                    break
+            if progress and n % 25 == 0:
+                progress(n, len(lines), loaded)
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+    print(f"[completed1k] done: {loaded} loaded, {skipped} present, "
+          f"{failed} failed", flush=True)
+    return loaded
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("usage: python ingest_json.py <data_dir | deed_folder>")

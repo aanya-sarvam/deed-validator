@@ -129,6 +129,12 @@ CREATE INDEX IF NOT EXISTS idx_docs_api_mismatch ON documents(has_api_mismatch)
 -- the top of the assignee's queue, independent of assignment/status ordering.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS is_priority BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_docs_priority ON documents(is_priority) WHERE is_priority = TRUE;
+-- 3-tier batch priority, set at ingest by source (completed_1k=30 >
+-- vertex/mismatch=20 > others=0). Sorted ABOVE is_priority as a tiebreaker;
+-- is_priority still floats assigned in-progress work to the top within a rank.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS priority_rank INT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_docs_priority_rank ON documents(priority_rank)
+    WHERE priority_rank > 0;
 -- Which GCS source a deed's scans/data live in, so images/data route to the
 -- right bucket+credentials: 'classification' (existing corpus) | 'vertex'
 -- (vision-vertex-batch-asia-south1).

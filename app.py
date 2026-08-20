@@ -287,6 +287,11 @@ def _run_incremental_ingest():
             _progress("checking vertex-batch mismatch deeds on GCS")
             print("[reingest] checking vertex-batch mismatch deeds on GCS...", flush=True)
             ingest_gcs_vertex(init=False, progress=_gcs_raw_progress)
+        if gcs_store.vertex_enabled():
+            from ingest_json import ingest_gcs_completed_1k
+            _progress("checking completed-1k deeds on GCS")
+            print("[reingest] checking completed-1k deeds on GCS...", flush=True)
+            ingest_gcs_completed_1k(init=False, progress=_gcs_raw_progress)
         groundings = glob.glob("data/**/grounding.json", recursive=True)
         if groundings:
             from ingest_json import ingest_dir
@@ -313,6 +318,20 @@ def admin_reingest(user=Depends(require_admin)):
     import threading
     threading.Thread(target=_run_incremental_ingest, daemon=True).start()
     return {"ok": True, "message": "Ingestion started — check /api/ingest-status"}
+
+
+@app.post("/api/admin/backfill-priority-rank")
+def backfill_priority_rank(user=Depends(require_admin)):
+    """One-time, idempotent: set priority_rank for existing deeds so the 3 tiers
+    are coherent (completed_1k already gets 30 at ingest; this sets vertex=20,
+    everything else stays 0). Safe to re-run."""
+    with connect() as con:
+        con.execute("UPDATE documents SET priority_rank = 20 "
+                    "WHERE source = 'vertex' AND priority_rank <> 20")
+        con.execute("UPDATE documents SET priority_rank = 30 "
+                    "WHERE source = 'completed_1k' AND priority_rank <> 30")
+        con.commit()
+    return {"ok": True}
 
 
 @app.get("/api/admin/gcs-raw-diagnostics")
@@ -788,7 +807,10 @@ def search(q: str = "", field: str = "deed_number", status: str = "",
         # of the assignee's queue while there's still work on them; once
         # validated they drop back into the normal order (validated = bottom),
         # so completed priority deeds don't pile up above pending work.
-        order_sql = ("CASE WHEN d.is_priority AND d.status IN ('pending','in_review','flagged') "
+        order_sql = ("CASE WHEN d.priority_rank > 0 AND d.status IN ('pending','in_review','flagged') "
+                     "THEN 0 ELSE 1 END, "
+                     "d.priority_rank DESC, "
+                     "CASE WHEN d.is_priority AND d.status IN ('pending','in_review','flagged') "
                      "THEN 0 ELSE 1 END, "
                      "CASE d.status WHEN 'in_review' THEN 0 WHEN 'pending' THEN 1 "
                      "WHEN 'flagged' THEN 2 WHEN 'validated' THEN 3 ELSE 4 END, d.year, d.id")
@@ -1685,6 +1707,51 @@ def vertex_progress(group: str = "all", user=Depends(require_admin)):
             "corrected": agg["corrected"], "field_edits": field_edits,
             "correction_rate": correction_rate, "by_status": by_status,
             "experts": experts, "group": group}
+
+
+@app.get("/api/admin/completed1k-progress")
+def completed1k_progress(user=Depends(require_admin)):
+    """Progress + correction-rate tracker scoped to the completed_1k batch (999
+    prompt_v2 deeds). Same shape as vertex_progress, no group split."""
+    done_states = ("validated", "reviewed", "in_monitor_review")
+    pending_states = ("pending", "in_review")
+    params = {"done": list(done_states), "pending": list(pending_states)}
+    with connect() as con:
+        by_status = {r["status"]: r["c"] for r in con.execute(
+            "SELECT status, COUNT(*) c FROM documents "
+            "WHERE source='completed_1k' GROUP BY status")}
+        agg = con.execute(
+            "SELECT COUNT(*) total, "
+            "COUNT(*) FILTER (WHERE status = ANY(%(done)s)) done, "
+            "COUNT(*) FILTER (WHERE status = ANY(%(pending)s)) pending, "
+            "COUNT(*) FILTER (WHERE status='flagged') flagged, "
+            "COUNT(*) FILTER (WHERE assigned_to IS NOT NULL) assigned, "
+            "COUNT(*) FILTER (WHERE status = ANY(%(done)s) AND EXISTS ("
+            "  SELECT 1 FROM edit_log e WHERE e.document_id=documents.id "
+            "  AND e.action='edit')) corrected "
+            "FROM documents WHERE source='completed_1k'", params).fetchone()
+        field_edits = con.execute(
+            "SELECT COUNT(*) c FROM edit_log e JOIN documents d ON d.id=e.document_id "
+            "WHERE d.source='completed_1k' AND e.action='edit'").fetchone()["c"]
+        experts = [dict(r) for r in con.execute(
+            "SELECT u.id, u.full_name, COUNT(d.id) assigned, "
+            "COUNT(d.id) FILTER (WHERE d.status = ANY(%(done)s)) done, "
+            "COUNT(d.id) FILTER (WHERE d.status = ANY(%(pending)s)) remaining, "
+            "COUNT(d.id) FILTER (WHERE d.status = ANY(%(done)s) AND EXISTS ("
+            "  SELECT 1 FROM edit_log e WHERE e.document_id=d.id AND e.action='edit'"
+            ")) corrected "
+            "FROM users u LEFT JOIN documents d "
+            "  ON d.assigned_to=u.id AND d.source='completed_1k' "
+            "WHERE u.role='expert' GROUP BY u.id, u.full_name "
+            "ORDER BY done DESC, u.id", params).fetchall()]
+    total = agg["total"]
+    done = agg["done"]
+    return {"total": total, "assigned": agg["assigned"],
+            "unassigned": total - agg["assigned"], "done": done,
+            "pending": agg["pending"], "flagged": agg["flagged"],
+            "corrected": agg["corrected"], "field_edits": field_edits,
+            "correction_rate": round(agg["corrected"] / done * 100) if done else 0,
+            "by_status": by_status, "experts": experts}
 
 
 # Only these edit_log actions represent an actual change to a field's

@@ -709,7 +709,7 @@ function showView(name) {
   $(name).style.display = name === 'validate' ? 'flex' : 'block';
   CURRENT_VIEW = name;
   if (name === 'progress') loadProgress();
-  if (name === 'monitor') loadVertexBatchDashboardTemp(); // TEMP: was loadMonitor()
+  if (name === 'monitor') loadCompleted1kDashboardTemp(); // TEMP: was loadMonitor()
   if (name === 'assign') loadAssign();
   if (name === 'accounts') loadUsers();
   writeHash();
@@ -2467,6 +2467,41 @@ async function loadVertexBatchDashboardTemp() {
     <h2>Mismatch batch (newly added deeds)</h2>
     ${mmBlock}
     ${changesBlock}`;
+}
+
+
+async function loadCompleted1kDashboardTemp() {
+  const mm = await api('/admin/completed1k-progress').catch(() => null);
+  let mmBlock = '<p style="color:var(--muted)">No batch data yet.</p>';
+  if (mm && mm.total) {
+    const pctDone = mm.total ? Math.round(mm.done / mm.total * 100) : 0;
+    const cards = `<div class="cards">
+      <div class="card"><div class="num">${mm.total}</div><div class="lbl">Batch total</div></div>
+      <div class="card"><div class="num">${mm.done}</div><div class="lbl">Validated</div></div>
+      <div class="card"><div class="num">${mm.pending}</div><div class="lbl">Pending</div></div>
+      <div class="card"><div class="num">${mm.unassigned}</div><div class="lbl">Unassigned</div></div>
+      <div class="card"><div class="num">${mm.corrected}</div><div class="lbl">Deeds corrected</div></div>
+      <div class="card"><div class="num">${mm.correction_rate}%</div><div class="lbl">Correction rate</div></div>
+    </div>
+    <div class="pbar"><div style="width:${pctDone}%"></div></div>
+    <p style="color:var(--muted);font-size:0.8333rem">${pctDone}% validated · ${mm.unassigned} unassigned · ${mm.flagged} flagged · ${mm.field_edits} field edits</p>`;
+    const rows = mm.experts.map(e => {
+      const r = e.done ? Math.round(e.corrected / e.done * 100) : 0;
+      return `<tr><td>${e.full_name}</td><td>${e.remaining} / ${e.assigned}</td>
+        <td>${e.done}</td><td>${e.corrected}</td><td>${r}%</td></tr>`;
+    }).join('') || '<tr><td colspan="5">Not assigned yet</td></tr>';
+    mmBlock = `${cards}
+      <table class="stats"><thead><tr><th>Expert</th><th>Open / assigned</th>
+        <th>Validated</th><th>Corrected</th><th>Correction rate</th></tr></thead>
+        <tbody>${rows}</tbody></table>`;
+  }
+  $('monitor').innerHTML = `
+    <h1>Completed-1k dashboard</h1>
+    <p style="color:var(--muted);font-size:0.9rem;margin-top:-8px">
+      The 999 prompt_v2 deeds (top priority). Main dashboard is unchanged
+      underneath and can be swapped back any time.</p>
+    <h2>Completed-1k batch (newly added deeds)</h2>
+    ${mmBlock}`;
 }
 
 

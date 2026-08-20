@@ -77,12 +77,18 @@ def _get_bucket_vertex():
 
 
 def _bucket_for(source):
-    """Pick the right authenticated bucket for a deed's source."""
-    return _get_bucket_vertex() if source == "vertex" else _get_bucket()
+    """Pick the right authenticated bucket for a deed's source.
+    completed_1k shares the vertex bucket+SA (different image folder only)."""
+    return (_get_bucket_vertex()
+            if source in ("vertex", "completed_1k") else _get_bucket())
 
 
-def _vertex_images_prefix():
-    # Page PNGs live at <prefix>/<reg_no>/<page>.png
+def _vertex_images_prefix(source="vertex"):
+    # Page PNGs live at <prefix>/<reg_no>/<page>.png. completed_1k deeds are
+    # in the same bucket but a different top-level folder.
+    if source == "completed_1k":
+        return os.environ.get("GCS_COMPLETED1K_IMAGES_PREFIX",
+                              "inputs_1985_1994_batch2/grounding/images").strip("/")
     return os.environ.get("GCS_VERTEX_IMAGES_PREFIX",
                           "inputs/grounding/images").strip("/")
 
@@ -279,7 +285,7 @@ def _pages_via_listing(reg_no):
     return {"pages": pages}
 
 
-def _pages_via_vertex_listing(reg_no):
+def _pages_via_vertex_listing(reg_no, source="vertex"):
     """Page discovery for vertex-source deeds. Their SA has objectViewer
     (list included), and page PNGs live at
     <GCS_VERTEX_IMAGES_PREFIX>/<reg_no>/<name>.png — so just list the folder
@@ -288,7 +294,7 @@ def _pages_via_vertex_listing(reg_no):
     rel_path is relative to the vertex bucket root, so fetch_page_image can
     read bucket.blob(rel_path) directly on the vertex bucket."""
     bucket = _get_bucket_vertex()
-    base = _vertex_images_prefix()
+    base = _vertex_images_prefix(source)
     folder = f"{base}/{reg_no}/"
     try:
         blobs = list(bucket.list_blobs(prefix=folder))
@@ -372,8 +378,8 @@ def _pages_for_reg_no(reg_no, source="classification"):
 
     # Vertex-source deeds (the 502 Gemini-mismatch batch) live in a different
     # bucket with a different image layout; discover via listing (SA has list).
-    if source == "vertex":
-        vpages = _pages_via_vertex_listing(reg_no)
+    if source in ("vertex", "completed_1k"):
+        vpages = _pages_via_vertex_listing(reg_no, source)
         if vpages:
             try:
                 cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -480,7 +486,7 @@ def fetch_page_image(reg_no, page_num, source="classification",
         return data, _content_type(data[:8])
     bucket = _bucket_for(source)
     # vertex rel_path is already bucket-root-relative; classification joins prefix
-    blob_path = rel if source == "vertex" else f"{prefix}/{rel}"
+    blob_path = rel if source in ("vertex", "completed_1k") else f"{prefix}/{rel}"
     blob = bucket.blob(blob_path)
     if not blob.exists():
         return None, None
