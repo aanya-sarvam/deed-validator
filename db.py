@@ -77,6 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_fields_label ON fields(label);
 --  large table HTML from Akshar blocks, which exceeds the btree size limit)
 DROP INDEX IF EXISTS idx_fields_name;
 CREATE INDEX IF NOT EXISTS idx_log_doc      ON edit_log(document_id);
+CREATE INDEX IF NOT EXISTS idx_edit_log_field ON edit_log(field_id);
 
 -- migrations for databases created before these columns existed
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS assigned_to BIGINT REFERENCES users(id);
