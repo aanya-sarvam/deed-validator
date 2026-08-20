@@ -332,7 +332,8 @@
       <button id="nav-browse" class="active" onclick="showView('browse')">Records</button>
       <button id="nav-progress" onclick="showView('progress')" style="display:none">Dashboard</button>
       <button id="nav-monitor" onclick="showView('monitor')" style="display:none">Batch dashboard</button>
-      <!-- TEMP: normally "Review dashboard" -> loadMonitor(); see loadVertexBatchDashboardTemp() -->
+      <!-- Dashboard = completed-1k; Batch dashboard = mismatch/vertex batch.
+           Real Review dashboard (loadMonitor) is still available if we swap back. -->
       <button id="nav-assign" onclick="showView('assign')" style="display:none">Assign work</button>
       <button id="nav-accounts" onclick="showView('accounts')" style="display:none">Accounts</button>
     </nav>
@@ -708,8 +709,8 @@ function showView(name) {
   }
   $(name).style.display = name === 'validate' ? 'flex' : 'block';
   CURRENT_VIEW = name;
-  if (name === 'progress') loadProgress();
-  if (name === 'monitor') loadCompleted1kDashboardTemp(); // TEMP: was loadMonitor()
+  if (name === 'progress') loadCompleted1kDashboardTemp(); // completed-1k (new) batch
+  if (name === 'monitor') loadVertexBatchDashboardTemp();  // mismatch/vertex batch
   if (name === 'assign') loadAssign();
   if (name === 'accounts') loadUsers();
   writeHash();
@@ -2399,11 +2400,9 @@ async function loadProgress() {
     <p style="margin-top:16px"><button class="primary" onclick="location.href='/api/export?token='+TOKEN">Download corrected dataset (JSON)</button></p>`;
 }
 
-// ---------- TEMPORARY: batch/mismatch dashboard, standing in for the
-// Review dashboard (nav-monitor / #monitor) while the main Dashboard tab
-// is too heavy to load everything at once. loadMonitor() below (the real
-// review-queue view) is left intact and untouched — revert by pointing
-// showView('monitor') back at loadMonitor() and restoring the nav label.
+// Batch dashboard (nav-monitor): vertex mismatch/control cohort (~1002).
+// Main Dashboard (nav-progress): completed-1k cohort (999). loadMonitor()
+// (review-queue) is left intact if we need to restore it later.
 let VERTEX_GROUP = 'all'; // 'all' | 'mismatch' | 'control' — dashboard-only split, see tag_vertex_groups.py
 function setVertexGroup(g) { VERTEX_GROUP = g; loadVertexBatchDashboardTemp(); }
 
@@ -2461,10 +2460,10 @@ async function loadVertexBatchDashboardTemp() {
   $('monitor').innerHTML = `
     <h1>Batch dashboard</h1>
     <p style="color:var(--muted);font-size:0.9rem;margin-top:-8px">
-      Standing in here temporarily while the main Dashboard tab is too heavy — the real Review
-      dashboard is unchanged underneath and can be swapped back any time.</p>
+      Vertex mismatch batch (502 mismatches + 500 controls). The main Dashboard
+      tab tracks the newer completed-1k cohort.</p>
     ${groupTabs}
-    <h2>Mismatch batch (newly added deeds)</h2>
+    <h2>Mismatch batch</h2>
     ${mmBlock}
     ${changesBlock}`;
 }
@@ -2472,7 +2471,7 @@ async function loadVertexBatchDashboardTemp() {
 
 async function loadCompleted1kDashboardTemp() {
   const mm = await api('/admin/completed1k-progress').catch(() => null);
-  let mmBlock = '<p style="color:var(--muted)">No batch data yet.</p>';
+  let mmBlock = '<p style="color:var(--muted)">No batch data yet — run completed-1k ingest first.</p>';
   if (mm && mm.total) {
     const pctDone = mm.total ? Math.round(mm.done / mm.total * 100) : 0;
     const cards = `<div class="cards">
@@ -2495,18 +2494,24 @@ async function loadCompleted1kDashboardTemp() {
         <th>Validated</th><th>Corrected</th><th>Correction rate</th></tr></thead>
         <tbody>${rows}</tbody></table>`;
   }
-  $('monitor').innerHTML = `
-    <h1>Completed-1k dashboard</h1>
+  $('progress').innerHTML = `
+    <h1>Dashboard</h1>
     <p style="color:var(--muted);font-size:0.9rem;margin-top:-8px">
-      The 999 prompt_v2 deeds (top priority). Main dashboard is unchanged
-      underneath and can be swapped back any time.</p>
-    <h2>Completed-1k batch (newly added deeds)</h2>
-    ${mmBlock}`;
+      Completed-1k batch (999 prompt_v2 deeds, top priority). Use Batch dashboard
+      for the older mismatch cohort.</p>
+    <h2>Completed-1k batch</h2>
+    ${mmBlock}
+    <h2>Data ingestion</h2>
+    <p id="ri_status" style="color:var(--muted)">Loads only the completed-1k deeds (skips the heavy orissa_deeds pass that can 502 on Render).</p>
+    <p><button class="primary" onclick="doReingestCompleted1k()">Ingest completed-1k deeds</button>
+       <button class="small" style="margin-left:8px" onclick="doReingest()">Check all sources</button></p>
+    <p style="margin-top:16px"><button class="primary" onclick="location.href='/api/export?token='+TOKEN">Download corrected dataset (JSON)</button></p>`;
 }
 
 
 async function doReingest() {
   const el = $('ri_status');
+  if (!el) return;
   el.textContent = 'Starting…';
   try {
     await api('/admin/reingest', { method: 'POST' });
@@ -2515,7 +2520,29 @@ async function doReingest() {
     try {
       const s = await api('/ingest-status');
       el.textContent = `${s.state} — ${s.detail || ''} (${s.documents_now} documents total)`;
-      if (s.state === 'done' || s.state === 'error') clearInterval(poll);
+      if (s.state === 'done' || s.state === 'error') {
+        clearInterval(poll);
+        if (s.state === 'done') loadCompleted1kDashboardTemp();
+      }
+    } catch (e) { el.textContent = 'Error: ' + e.message; clearInterval(poll); }
+  }, 2000);
+}
+
+async function doReingestCompleted1k() {
+  const el = $('ri_status');
+  if (!el) return;
+  el.textContent = 'Starting completed-1k ingest…';
+  try {
+    await api('/admin/reingest-completed1k', { method: 'POST' });
+  } catch (e) { el.textContent = 'Error: ' + e.message; return; }
+  const poll = setInterval(async () => {
+    try {
+      const s = await api('/ingest-status');
+      el.textContent = `${s.state} — ${s.detail || ''} (${s.documents_now} documents total)`;
+      if (s.state === 'done' || s.state === 'error') {
+        clearInterval(poll);
+        if (s.state === 'done') loadCompleted1kDashboardTemp();
+      }
     } catch (e) { el.textContent = 'Error: ' + e.message; clearInterval(poll); }
   }, 2000);
 }

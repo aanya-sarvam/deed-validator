@@ -248,14 +248,20 @@ def require_monitor(user=Depends(current_user)):
     return user
 
 
-def _run_incremental_ingest():
-    """Checks every configured source for deeds not yet in the DB and loads
-    them: GCS sample_1000-style pre-made-PDF batches, the raw orissa_deeds
-    export straight from GCS (no local files, no bucket writes — PDFs build
-    lazily on first view), and local data/ folders. Each source skips
-    deed_numbers already present, so this is safe to call anytime — startup
-    or Admin -> Reingest — without resetting or duplicating anything, unlike
-    _auto_ingest() above which only loads data on a first, empty-DB boot."""
+def _run_incremental_ingest(include_raw=False, only=None):
+    """Checks configured sources for deeds not yet in the DB and loads them.
+    Each source skips deed_numbers already present, so this is safe to call
+    anytime — Admin -> Reingest — without resetting or duplicating anything.
+
+    Order matters on small Render instances: completed_1k + vertex run FIRST
+    (small JSONLs). The raw orissa_deeds export loads multi‑MB grounding+OCR
+    files into memory and has OOMed free-tier deploys mid-reingest (502), so
+    it is SKIPPED by default — pass include_raw=True only when you actually
+    need to pull a new orissa_deeds batch.
+
+    only=None       → all sources (raw only if include_raw)
+    only='completed_1k' → just the 999 prompt_v2 batch
+    """
     import glob
     try:
         _ingest_status.update(state="running", detail="reingest started")
@@ -274,30 +280,42 @@ def _run_incremental_ingest():
             _progress(f"gcs-raw{pfx}: {n}/{total} lines ({loaded} loaded)")
 
         import gcs_store
-        if gcs_store.enabled():
-            from ingest_json import ingest_gcs, ingest_gcs_raw
-            _progress("checking GCS sample_1000-style batches")
-            print("[reingest] checking GCS sample_1000-style batches...", flush=True)
-            ingest_gcs(init=False, progress=_gcs_progress)
-            _progress("checking raw orissa_deeds export on GCS")
-            print("[reingest] checking raw orissa_deeds export on GCS...", flush=True)
-            ingest_gcs_raw(init=False, progress=_gcs_raw_progress)
-        if gcs_store.vertex_enabled():
-            from ingest_json import ingest_gcs_vertex
-            _progress("checking vertex-batch mismatch deeds on GCS")
-            print("[reingest] checking vertex-batch mismatch deeds on GCS...", flush=True)
-            ingest_gcs_vertex(init=False, progress=_gcs_raw_progress)
-        if gcs_store.vertex_enabled():
+        do_all = only is None
+
+        # Light vertex-bucket batches first so a later OOM can't block them.
+        if gcs_store.vertex_enabled() and (do_all or only == "completed_1k"):
             from ingest_json import ingest_gcs_completed_1k
             _progress("checking completed-1k deeds on GCS")
             print("[reingest] checking completed-1k deeds on GCS...", flush=True)
             ingest_gcs_completed_1k(init=False, progress=_gcs_raw_progress)
-        groundings = glob.glob("data/**/grounding.json", recursive=True)
-        if groundings:
-            from ingest_json import ingest_dir
-            _progress(f"checking {len(groundings)} local deed folder(s)")
-            print(f"[reingest] checking {len(groundings)} local deed folder(s)...", flush=True)
-            ingest_dir("data", init=False)
+
+        if gcs_store.vertex_enabled() and do_all:
+            from ingest_json import ingest_gcs_vertex
+            _progress("checking vertex-batch mismatch deeds on GCS")
+            print("[reingest] checking vertex-batch mismatch deeds on GCS...", flush=True)
+            ingest_gcs_vertex(init=False, progress=_gcs_raw_progress)
+
+        if gcs_store.enabled() and do_all:
+            from ingest_json import ingest_gcs, ingest_gcs_raw
+            _progress("checking GCS sample_1000-style batches")
+            print("[reingest] checking GCS sample_1000-style batches...", flush=True)
+            ingest_gcs(init=False, progress=_gcs_progress)
+            if include_raw:
+                _progress("checking raw orissa_deeds export on GCS")
+                print("[reingest] checking raw orissa_deeds export on GCS...", flush=True)
+                ingest_gcs_raw(init=False, progress=_gcs_raw_progress)
+            else:
+                print("[reingest] skipping raw orissa_deeds (pass include_raw=1 to enable)",
+                      flush=True)
+
+        if do_all:
+            groundings = glob.glob("data/**/grounding.json", recursive=True)
+            if groundings:
+                from ingest_json import ingest_dir
+                _progress(f"checking {len(groundings)} local deed folder(s)")
+                print(f"[reingest] checking {len(groundings)} local deed folder(s)...", flush=True)
+                ingest_dir("data", init=False)
+
         with connect() as con:
             n = con.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
         _ingest_status.update(state="done", documents=n, detail="reingest complete")
@@ -310,14 +328,34 @@ def _run_incremental_ingest():
 
 
 @app.post("/api/admin/reingest")
-def admin_reingest(user=Depends(require_admin)):
-    """Manually run ingestion for any NEW deeds across all configured
-    sources. Safe: existing deeds are skipped everywhere — this is how you
-    add a new batch (e.g. the raw orissa_deeds export) without resetting
-    the DB."""
+def admin_reingest(include_raw: bool = Query(False), user=Depends(require_admin)):
+    """Manually run ingestion for NEW deeds. Safe: existing deeds are skipped.
+
+    By default skips the huge raw orissa_deeds GCS export (which has OOMed
+    free-tier deploys). Pass include_raw=1 only when loading a new orissa
+    batch. Completed-1k and vertex batches always run."""
     import threading
-    threading.Thread(target=_run_incremental_ingest, daemon=True).start()
-    return {"ok": True, "message": "Ingestion started — check /api/ingest-status"}
+    threading.Thread(
+        target=_run_incremental_ingest,
+        kwargs={"include_raw": include_raw},
+        daemon=True,
+    ).start()
+    return {"ok": True, "message": "Ingestion started — check /api/ingest-status",
+            "include_raw": include_raw}
+
+
+@app.post("/api/admin/reingest-completed1k")
+def admin_reingest_completed1k(user=Depends(require_admin)):
+    """Ingest ONLY the 999 completed-1k deeds from the vertex bucket.
+    Use this when full reingest 502s on the heavy orissa_deeds pass."""
+    import threading
+    threading.Thread(
+        target=_run_incremental_ingest,
+        kwargs={"only": "completed_1k"},
+        daemon=True,
+    ).start()
+    return {"ok": True,
+            "message": "Completed-1k ingestion started — check /api/ingest-status"}
 
 
 @app.post("/api/admin/backfill-priority-rank")
