@@ -918,8 +918,13 @@ async function showHistory(docId) {
 function closeModal() { $('modal-root').innerHTML = ''; }
 
 /* ---------- batch field-changes drill-down (vertex + completed_1k) ---------- */
-let BATCH_CHANGES = [];
-let BATCH_CHANGES_SOURCE = 'vertex'; // 'vertex' | 'completed_1k'
+// One cache slot PER batch source. Previously both dashboards shared a single
+// BATCH_CHANGES array + a single BATCH_CHANGES_SOURCE flag, so a row click
+// resolved against whichever dashboard happened to load last — clicking a
+// completed_1k field would open mismatch-batch deeds. Each row now carries its
+// own source in the onclick, so a row can only ever resolve against its own
+// batch, regardless of load order, in-flight fetches, or empty results.
+const BATCH_CHANGES = { vertex: [], completed_1k: [] };
 
 // Render one side of a before/after cell literally: show exactly what was in
 // the box. If the box was empty, say so plainly ("(nothing)") rather than
@@ -932,19 +937,23 @@ function fmtChangeVal(val, side) {
   return '<span style="color:var(--muted);font-style:italic">(nothing)</span>';
 }
 
-function batchChangesApiBase() {
-  return BATCH_CHANGES_SOURCE === 'completed_1k'
+function batchChangesApiBase(src) {
+  return src === 'completed_1k'
     ? '/admin/completed1k-changes' : '/admin/vertex-changes';
 }
 
-async function showBatchChangeDetail(i) {
-  const c = BATCH_CHANGES[i];
+// src is passed in from the clicked row ('vertex' | 'completed_1k') rather than
+// read from a global, so the modal always hits the endpoint for the batch the
+// row actually belongs to.
+async function showBatchChangeDetail(i, src) {
+  const source = src === 'completed_1k' ? 'completed_1k' : 'vertex';
+  const c = (BATCH_CHANGES[source] || [])[i];
   if (!c) return;
   let rows;
   try {
-    let url = `${batchChangesApiBase()}/detail?section=${encodeURIComponent(c.section)}`
+    let url = `${batchChangesApiBase(source)}/detail?section=${encodeURIComponent(c.section)}`
       + `&label=${encodeURIComponent(c.label)}&action=${encodeURIComponent(c.action)}`;
-    if (BATCH_CHANGES_SOURCE === 'vertex') {
+    if (source === 'vertex') {
       url += `&group=${encodeURIComponent(VERTEX_GROUP)}`;
     }
     rows = await api(url);
@@ -973,8 +982,7 @@ async function showBatchChangeDetail(i) {
 
 // Back-compat alias used by older onclick handlers if any linger in cache.
 async function showVertexChangeDetail(i) {
-  BATCH_CHANGES_SOURCE = 'vertex';
-  return showBatchChangeDetail(i);
+  return showBatchChangeDetail(i, 'vertex');
 }
 
 /* ---------- validate ---------- */
@@ -2458,10 +2466,11 @@ async function loadVertexBatchDashboardTemp() {
     mmBlock = '<p style="color:var(--muted)">No deeds in this group.</p>';
   }
   let changesBlock = '';
+  // Always overwrite this source's slot — including with [] — so a failed or
+  // empty fetch can never leave the previous batch's rows clickable.
+  BATCH_CHANGES.vertex = (changes && changes.length) ? changes : [];
   if (changes && changes.length) {
-    BATCH_CHANGES = changes;
-    BATCH_CHANGES_SOURCE = 'vertex';
-    const changeRows = changes.map((c, i) => `<tr style="cursor:pointer" onclick="showBatchChangeDetail(${i})">
+    const changeRows = changes.map((c, i) => `<tr style="cursor:pointer" onclick="showBatchChangeDetail(${i}, 'vertex')">
         <td>${escHtml(c.section)}</td><td>${escHtml(c.label)}</td>
         <td>${escHtml(c.action_label)}</td><td>${c.change_count}</td>
         <td>${c.doc_count}</td><td>${c.last_change}</td></tr>`).join('');
@@ -2515,10 +2524,9 @@ async function loadCompleted1kDashboardTemp() {
         <tbody>${rows}</tbody></table>`;
   }
   let changesBlock = '';
+  BATCH_CHANGES.completed_1k = (changes && changes.length) ? changes : [];
   if (changes && changes.length) {
-    BATCH_CHANGES = changes;
-    BATCH_CHANGES_SOURCE = 'completed_1k';
-    const changeRows = changes.map((c, i) => `<tr style="cursor:pointer" onclick="showBatchChangeDetail(${i})">
+    const changeRows = changes.map((c, i) => `<tr style="cursor:pointer" onclick="showBatchChangeDetail(${i}, 'completed_1k')">
         <td>${escHtml(c.section)}</td><td>${escHtml(c.label)}</td>
         <td>${escHtml(c.action_label)}</td><td>${c.change_count}</td>
         <td>${c.doc_count}</td><td>${c.last_change}</td></tr>`).join('');
